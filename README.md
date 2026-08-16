@@ -4,9 +4,9 @@ Fork of [NuvioMedia](https://github.com/NuvioMedia) that keeps the full Nuvio me
 
 ## Scope
 
-- **Working surface right now:** Android (Kotlin Multiplatform / Compose Multiplatform from `NuvioMobile`)
+- **Working surfaces:** Android (Compose Multiplatform) + browser/TV web (`upstream/NuvioWeb`)
 - **Mirrored upstream snapshots:** `upstream/` (TV, Desktop, Web, self-host, engine, wrappers)
-- **iOS / TV / Desktop IPTV work:** deferred
+- **iOS / Desktop IPTV work:** deferred
 
 ## Android Live tab
 
@@ -20,6 +20,21 @@ Fork of [NuvioMedia](https://github.com/NuvioMedia) that keeps the full Nuvio me
 
 Built-in playlist file: `composeApp/src/commonMain/composeResources/files/usa_public.m3u`
 (sources: [iptv-org](https://github.com/iptv-org/iptv) US list + [Free-TV](https://github.com/Free-TV/IPTV) USA).
+
+## Web Live tab (`upstream/NuvioWeb`)
+
+Same Live IPTV feature set is available in the web app sidebar:
+
+```bash
+cd upstream/NuvioWeb
+npm install
+npm run build
+npm run serve
+```
+
+Then open the served URL and choose **Live**. USA Public is built in; add M3U / Stalker / Xtream the same way as Android.
+
+Note: some remote playlists or portal APIs may fail in a normal browser because of **CORS**. Android and packaged TV builds are less affected.
 
 ## Layout
 

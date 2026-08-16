@@ -117,6 +117,17 @@ Then install the package with webOS Dev Manager or your preferred webOS developm
 - Tizen Studio, only if building or installing Tizen packages manually
 - webOS CLI tools, only if building or installing webOS packages manually
 
+### Live IPTV
+
+The sidebar **Live** tab ships with built-in **USA Public** channels (same curated list as the Android app) plus M3U / Stalker Portal / Xtream Codes sources.
+
+```bash
+npm run build
+npm run serve
+```
+
+Open the app in a browser, then choose **Live**. Some remote playlists or portal APIs may be blocked by browser CORS; packaged Tizen/webOS builds are usually fine for those.
+
 ### Setup
 
 ```bash

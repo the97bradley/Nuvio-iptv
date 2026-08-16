@@ -7,6 +7,7 @@ import { SyncCodeScreen } from "../screens/account/syncCodeScreen.js";
 import { ProfileSelectionScreen } from "../../core/profile/profileSelectionScreen.js";
 import { MetaDetailsScreen } from "../screens/detail/metaDetailsScreen.js";
 import { LibraryScreen } from "../screens/library/libraryScreen.js";
+import { LiveScreen } from "../screens/live/liveScreen.js";
 import { SearchScreen } from "../screens/search/searchScreen.js";
 import { DiscoverScreen } from "../screens/search/discoverScreen.js";
 import { SettingsScreen } from "../screens/settings/settingsScreen.js";
@@ -93,6 +94,7 @@ export const Router = {
     essentialAddonSetup: EssentialAddonSetupScreen,
     detail: MetaDetailsScreen,
     library: LibraryScreen,
+    live: LiveScreen,
     search: SearchScreen,
     discover: DiscoverScreen,
     settings: SettingsScreen,

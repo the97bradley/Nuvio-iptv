@@ -48,6 +48,7 @@ const KEY_ALIASES = {
   "sidebar.expandSidebar": "cd_expand_sidebar",
   "sidebar.home": "nav_home",
   "sidebar.library": "nav_library",
+  "sidebar.live": "nav_live",
   "sidebar.search": "nav_search",
   "sidebar.settings": "nav_settings",
   "settings.account.signInWithQr": "account_signin_qr_title",
