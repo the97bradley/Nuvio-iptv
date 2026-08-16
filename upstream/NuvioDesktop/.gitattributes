@@ -1,0 +1,2 @@
+# Native desktop runtimes are excluded from this Android-focused hub fork.
+# Re-fetch full NuvioDesktop from upstream if you need macOS/Windows player binaries.

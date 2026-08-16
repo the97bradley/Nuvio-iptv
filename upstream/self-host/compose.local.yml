@@ -1,0 +1,4 @@
+services:
+  account-dashboard:
+    ports:
+      - 127.0.0.1:${ACCOUNT_DASHBOARD_PORT:-3000}:8080/tcp

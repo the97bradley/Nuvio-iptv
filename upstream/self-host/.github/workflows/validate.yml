@@ -1,0 +1,185 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Scan Git history for secrets
+        run: >-
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro"
+          ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          git --no-banner --redact /repo
+      - name: Generate test configuration
+        run: |
+          cp .env.example .env
+          ./scripts/generate-secrets.sh
+          mkdir -p volumes/db/data volumes/storage
+      - name: Validate shell syntax
+        run: |
+          sh -n nuvio
+          sh -n scripts/generate-secrets.sh
+          sh -n scripts/import-account.sh
+          sh -n tests/assert-schema.sh
+          sh -n tests/smoke-account-import.sh
+          sh -n tests/smoke-signup.sh
+          sh -n tests/smoke-backup-restore.sh
+          sh -n tests/smoke-discovery.sh
+          sh -n tests/smoke-security.sh
+          sh -n tests/smoke-upgrade.sh
+          sh -n tests/smoke-workflows.sh
+      - name: Validate Compose
+        run: |
+          docker compose config --quiet
+          test -z "$(docker compose config --services | grep -E '^(studio|meta|realtime)$')"
+          test "$(docker compose config --services | grep -Ec '^account-dashboard$')" -eq 1
+          test -z "$(docker compose config --services | grep -E '^caddy$')"
+          docker compose --profile studio --profile realtime config --quiet
+          test "$(docker compose --profile studio --profile realtime config --services | grep -Ec '^(studio|meta|realtime)$')" -eq 3
+          docker compose -f compose.yml -f compose.production.yml config --quiet
+          test "$(docker compose -f compose.yml -f compose.production.yml config --services | grep -Ec '^account-dashboard$')" -eq 1
+          test "$(docker compose -f compose.yml -f compose.production.yml config --services | grep -Ec '^caddy$')" -eq 1
+          NUVIO_PROXY_PORT=18080 docker compose -f compose.yml -f compose.external-proxy.yml config --quiet
+          test "$(NUVIO_PROXY_PORT=18080 docker compose -f compose.yml -f compose.external-proxy.yml config --services | grep -Ec '^account-dashboard$')" -eq 1
+          test "$(NUVIO_PROXY_PORT=18080 docker compose -f compose.yml -f compose.external-proxy.yml config --services | grep -Ec '^caddy$')" -eq 1
+      - name: Validate Caddy routing
+        run: |
+          docker run --rm \
+            -e NUVIO_CADDY_ADDRESS=backend.example.com \
+            -e ANON_KEY=test_publishable_key \
+            -v "$GITHUB_WORKSPACE/volumes/proxy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2.10.0-alpine \
+            caddy validate --config /etc/caddy/Caddyfile
+          docker run --rm \
+            -e NUVIO_CADDY_ADDRESS=:80 \
+            -e ANON_KEY=test_publishable_key \
+            -v "$GITHUB_WORKSPACE/volumes/proxy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2.10.0-alpine \
+            caddy validate --config /etc/caddy/Caddyfile
+      - name: Verify domain conversion preserves existing configuration
+        run: |
+          changed_keys='^(COMPOSE_FILE|NUVIO_PROXY_MODE|NUVIO_PROXY_PORT|NUVIO_DOMAIN|SUPABASE_PUBLIC_URL|API_EXTERNAL_URL|SITE_URL|ADDITIONAL_REDIRECT_URLS|MAILER_EXTERNAL_HOSTS|WEBAUTHN_RP_ID|WEBAUTHN_RP_ORIGINS)='
+          config_before=$(grep -Ev "$changed_keys" .env | sha256sum | cut -d' ' -f1)
+          ./nuvio set-domain backend.example.com
+          config_after=$(grep -Ev "$changed_keys" .env | sha256sum | cut -d' ' -f1)
+          test "$config_before" = "$config_after"
+          grep -qx 'COMPOSE_FILE=compose.yml:compose.production.yml' .env
+          grep -qx 'NUVIO_PROXY_MODE=bundled' .env
+          grep -qx 'SUPABASE_PUBLIC_URL=https://backend.example.com' .env
+          grep -qx 'SITE_URL=https://backend.example.com' .env
+          grep -qx 'ADDITIONAL_REDIRECT_URLS=https://backend.example.com' .env
+          external_output=$(./nuvio set-domain proxy.example.com --proxy external --proxy-port 18080)
+          printf '%s\n' "$external_output" | grep -q 'External proxy mode configured.'
+          printf '%s\n' "$external_output" | grep -q 'After ./nuvio up, Nuvio is available internally at http://127.0.0.1:18080.'
+          printf '%s\n' "$external_output" | grep -q 'HTTPS is not configured automatically.'
+          printf '%s\n' "$external_output" | grep -q 'Configure proxy.example.com in your existing reverse proxy.'
+          printf '%s\n' "$external_output" | grep -q 'Obtain and install a TLS certificate for proxy.example.com.'
+          printf '%s\n' "$external_output" | grep -q 'Run ./nuvio doctor.'
+          config_after=$(grep -Ev "$changed_keys" .env | sha256sum | cut -d' ' -f1)
+          test "$config_before" = "$config_after"
+          grep -qx 'COMPOSE_FILE=compose.yml:compose.external-proxy.yml' .env
+          grep -qx 'NUVIO_PROXY_MODE=external' .env
+          grep -qx 'NUVIO_PROXY_PORT=18080' .env
+          grep -qx 'SUPABASE_PUBLIC_URL=https://proxy.example.com' .env
+          grep -qx 'SITE_URL=https://proxy.example.com' .env
+          test "$(stat -c '%a' .env)" = 600
+          test -z "$(find . -maxdepth 1 -name '.env.before-domain-*' -print -quit)"
+      - name: Verify occupied proxy port diagnostics
+        run: |
+          test_root=$(mktemp -d)
+          git archive HEAD | tar -x -C "$test_root"
+          python3 -m http.server 18081 --bind 127.0.0.1 --directory "$test_root" >"$test_root/listener.log" 2>&1 &
+          listener_pid=$!
+          trap 'kill "$listener_pid" 2>/dev/null || true; rm -rf "$test_root"' EXIT
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS -o /dev/null http://127.0.0.1:18081/; then
+              break
+            fi
+            sleep 0.2
+          done
+          if (cd "$test_root" && ./nuvio setup --domain proxy.example.com --proxy external --proxy-port 18081 --no-import-account) >"$test_root/setup.log" 2>&1; then
+            echo "setup accepted an occupied external proxy port" >&2
+            exit 1
+          fi
+          grep -q 'Port 18081 is already in use by' "$test_root/setup.log"
+          grep -q 'Choose another loopback gateway port with --proxy-port PORT.' "$test_root/setup.log"
+          test ! -e "$test_root/.env"
+          setup_output=$(cd "$test_root" && ./nuvio setup --domain proxy.example.com --proxy external --proxy-port 18082 --no-import-account)
+          printf '%s\n' "$setup_output" | grep -q 'External proxy mode configured.'
+          printf '%s\n' "$setup_output" | grep -q 'Nuvio is available internally at http://127.0.0.1:18082.'
+          printf '%s\n' "$setup_output" | grep -q 'HTTPS is not configured automatically.'
+          printf '%s\n' "$setup_output" | grep -q 'Configure proxy.example.com in your existing reverse proxy.'
+          printf '%s\n' "$setup_output" | grep -q 'Obtain and install a TLS certificate for proxy.example.com.'
+          printf '%s\n' "$setup_output" | grep -q 'Run ./nuvio doctor.'
+
+  database-bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Generate test configuration
+        run: |
+          cp .env.example .env
+          ./scripts/generate-secrets.sh
+          mkdir -p volumes/db/data volumes/storage
+      - name: Initialize database
+        run: docker compose up -d --wait db
+      - name: Verify bootstrap schema
+        run: ./tests/assert-schema.sh database
+      - name: Show database logs on failure
+        if: failure()
+        run: docker compose logs db
+      - name: Stop services
+        if: always()
+        run: docker compose down --volumes
+
+  full-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure backend
+        run: ./nuvio setup --catalog-url https://catalog.selfhost.test/manifest.json
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Start service dependencies
+        run: docker compose up -d --wait
+      - name: Verify migration upgrade
+        run: ./tests/smoke-upgrade.sh
+      - name: Verify backend launcher
+        run: ./nuvio up
+      - name: Verify application schema
+        run: ./tests/assert-schema.sh
+      - name: Verify signup defaults
+        run: ./tests/smoke-signup.sh
+      - name: Verify backend discovery
+        run: ./tests/smoke-discovery.sh
+      - name: Verify client workflows
+        run: ./tests/smoke-workflows.sh
+      - name: Verify API security boundaries
+        run: ./tests/smoke-security.sh
+      - name: Verify official account import
+        run: ./tests/smoke-account-import.sh
+      - name: Verify backup and restore
+        run: ./tests/smoke-backup-restore.sh
+      - name: Show service logs on failure
+        if: failure()
+        run: docker compose logs
+      - name: Stop services
+        if: always()
+        run: docker compose down --volumes

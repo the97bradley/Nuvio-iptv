@@ -1,0 +1,391 @@
+package com.nuvio.app.features.iptv
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.LiveTv
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nuvio.app.core.ui.NuvioLoadingIndicator
+import com.nuvio.app.core.ui.NuvioScreen
+import com.nuvio.app.core.ui.NuvioScreenHeader
+import com.nuvio.app.core.ui.NuvioSurfaceCard
+import com.nuvio.app.core.ui.NuvioTokens
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.launch
+import nuvio.composeapp.generated.resources.Res
+import nuvio.composeapp.generated.resources.compose_nav_live
+import nuvio.composeapp.generated.resources.iptv_add_playlist
+import nuvio.composeapp.generated.resources.iptv_add_playlist_action
+import nuvio.composeapp.generated.resources.iptv_cancel
+import nuvio.composeapp.generated.resources.iptv_channel_count
+import nuvio.composeapp.generated.resources.iptv_empty_body
+import nuvio.composeapp.generated.resources.iptv_empty_title
+import nuvio.composeapp.generated.resources.iptv_groups_all
+import nuvio.composeapp.generated.resources.iptv_no_channels
+import nuvio.composeapp.generated.resources.iptv_playlist_name_label
+import nuvio.composeapp.generated.resources.iptv_playlist_url_label
+import nuvio.composeapp.generated.resources.iptv_remove_playlist
+import nuvio.composeapp.generated.resources.iptv_search_channels
+import org.jetbrains.compose.resources.stringResource
+
+@Composable
+fun LiveTvScreen(
+    modifier: Modifier = Modifier,
+    scrollToTopRequests: Flow<Unit> = emptyFlow(),
+    onPlayChannel: (IptvChannel) -> Unit,
+) {
+    val state by IptvRepository.state.collectAsStateWithLifecycle()
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    var showAddDialog by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        IptvRepository.ensureLoaded()
+    }
+
+    LaunchedEffect(scrollToTopRequests) {
+        scrollToTopRequests.collect {
+            listState.animateScrollToItem(0)
+        }
+    }
+
+    if (showAddDialog) {
+        AddPlaylistDialog(
+            onDismiss = { showAddDialog = false },
+            onConfirm = { name, url ->
+                scope.launch {
+                    val ok = IptvRepository.addM3uSource(name, url)
+                    if (ok) showAddDialog = false
+                }
+            },
+        )
+    }
+
+    NuvioScreen(
+        modifier = modifier.fillMaxSize(),
+        listState = listState,
+    ) {
+        item {
+            NuvioScreenHeader(
+                title = stringResource(Res.string.compose_nav_live),
+                includeStatusBarPadding = false,
+                actions = {
+                    IconButton(
+                        onClick = {
+                            scope.launch { IptvRepository.refreshSelectedSource() }
+                        },
+                        enabled = state.selectedSourceId != null && !state.isLoading,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Refresh,
+                            contentDescription = null,
+                        )
+                    }
+                    IconButton(onClick = { showAddDialog = true }) {
+                        Icon(
+                            imageVector = Icons.Rounded.Add,
+                            contentDescription = stringResource(Res.string.iptv_add_playlist),
+                        )
+                    }
+                },
+            )
+        }
+
+        if (state.sources.isNotEmpty()) {
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s8),
+                ) {
+                    state.sources.forEach { source ->
+                        FilterChip(
+                            selected = source.id == state.selectedSourceId,
+                            onClick = {
+                                scope.launch { IptvRepository.selectSource(source.id) }
+                            },
+                            label = {
+                                Text(
+                                    text = source.name,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                            trailingIcon = {
+                                Icon(
+                                    imageVector = Icons.Rounded.Delete,
+                                    contentDescription = stringResource(Res.string.iptv_remove_playlist),
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .clickable {
+                                            scope.launch { IptvRepository.removeSource(source.id) }
+                                        },
+                                )
+                            },
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            OutlinedTextField(
+                value = state.query,
+                onValueChange = IptvRepository::setQuery,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                leadingIcon = {
+                    Icon(Icons.Rounded.Search, contentDescription = null)
+                },
+                placeholder = { Text(stringResource(Res.string.iptv_search_channels)) },
+                enabled = state.channels.isNotEmpty() || state.isLoading,
+            )
+        }
+
+        if (state.groups.isNotEmpty()) {
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s8),
+                ) {
+                    FilterChip(
+                        selected = state.selectedGroupTitle == null,
+                        onClick = { IptvRepository.selectGroup(null) },
+                        label = { Text(stringResource(Res.string.iptv_groups_all)) },
+                    )
+                    state.groups.forEach { group ->
+                        FilterChip(
+                            selected = state.selectedGroupTitle == group.title,
+                            onClick = { IptvRepository.selectGroup(group.title) },
+                            label = {
+                                Text(
+                                    text = "${group.title} (${group.channels.size})",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                        )
+                    }
+                }
+            }
+        }
+
+        when {
+            state.isLoading && state.channels.isEmpty() -> {
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = NuvioTokens.Space.s24),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        NuvioLoadingIndicator()
+                    }
+                }
+            }
+
+            state.sources.isEmpty() -> {
+                item {
+                    NuvioSurfaceCard {
+                        Icon(
+                            imageVector = Icons.Rounded.LiveTv,
+                            contentDescription = null,
+                            modifier = Modifier.size(36.dp),
+                        )
+                        Spacer(Modifier.height(NuvioTokens.Space.s12))
+                        Text(
+                            text = stringResource(Res.string.iptv_empty_title),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.height(NuvioTokens.Space.s8))
+                        Text(
+                            text = stringResource(Res.string.iptv_empty_body),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(NuvioTokens.Space.s16))
+                        TextButton(onClick = { showAddDialog = true }) {
+                            Text(stringResource(Res.string.iptv_add_playlist_action))
+                        }
+                    }
+                }
+            }
+
+            state.errorMessage != null && state.filteredChannels.isEmpty() -> {
+                item {
+                    NuvioSurfaceCard {
+                        Text(
+                            text = state.errorMessage.orEmpty(),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            }
+
+            state.filteredChannels.isEmpty() -> {
+                item {
+                    NuvioSurfaceCard {
+                        Text(
+                            text = stringResource(Res.string.iptv_no_channels),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+            }
+
+            else -> {
+                item {
+                    Text(
+                        text = stringResource(
+                            Res.string.iptv_channel_count,
+                            state.filteredChannels.size,
+                        ),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                items(
+                    items = state.filteredChannels,
+                    key = { it.id },
+                ) { channel ->
+                    ChannelRow(
+                        channel = channel,
+                        onClick = { onPlayChannel(channel) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChannelRow(
+    channel: IptvChannel,
+    onClick: () -> Unit,
+) {
+    NuvioSurfaceCard(
+        modifier = Modifier.clickable(onClick = onClick),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s12),
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.LiveTv,
+                contentDescription = null,
+                modifier = Modifier.size(28.dp),
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = channel.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                channel.groupTitle?.takeIf { it.isNotBlank() }?.let { group ->
+                    Text(
+                        text = group,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Icon(
+                imageVector = Icons.Rounded.PlayArrow,
+                contentDescription = null,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AddPlaylistDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (name: String, url: String) -> Unit,
+) {
+    var name by rememberSaveable { mutableStateOf("") }
+    var url by rememberSaveable { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(Res.string.iptv_add_playlist)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s12)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text(stringResource(Res.string.iptv_playlist_name_label)) },
+                )
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text(stringResource(Res.string.iptv_playlist_url_label)) },
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(name, url) },
+                enabled = url.isNotBlank(),
+            ) {
+                Text(stringResource(Res.string.iptv_add_playlist_action))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(Res.string.iptv_cancel))
+            }
+        },
+    )
+}

@@ -1,0 +1,4 @@
+node_modules/
+dist/
+.home/
+.electron-gyp/

@@ -1,0 +1,910 @@
+#!/bin/sh
+
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+cd "$ROOT"
+
+
+die() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+require_env() {
+    [ -f .env ] || die "not configured; run ./nuvio setup first"
+
+    # Add the local port overlay for configurations created before it existed.
+    if [ "${COMPOSE_FILE+x}" != "x" ]; then
+        configured_compose_files=$(env_value COMPOSE_FILE)
+        case "$configured_compose_files" in
+            ""|compose.yml) export COMPOSE_FILE=compose.yml:compose.local.yml ;;
+        esac
+    fi
+
+    # Preserve the service set used before COMPOSE_PROFILES was introduced.
+    if ! grep -q '^COMPOSE_PROFILES=' .env && [ "${COMPOSE_PROFILES+x}" != "x" ]; then
+        export COMPOSE_PROFILES=studio,realtime
+    fi
+}
+
+require_docker() {
+    command -v docker >/dev/null 2>&1 || die "Docker is required"
+    docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required"
+}
+
+env_value() {
+    grep "^$1=" .env | head -n 1 | cut -d= -f2-
+}
+
+active_profiles() {
+    if [ "${COMPOSE_PROFILES+x}" = "x" ]; then
+        printf '%s\n' "$COMPOSE_PROFILES"
+    else
+        env_value COMPOSE_PROFILES
+    fi
+}
+
+profile_enabled() {
+    case ",$(active_profiles)," in
+        *,"$1",*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+validate_http_url() {
+    value=$1
+    label=$2
+    case "$value" in
+        ""|*[[:space:]]*) die "$label must be an http:// or https:// URL without spaces" ;;
+        http://*|https://*) ;;
+        *) die "$label must be an http:// or https:// URL" ;;
+    esac
+}
+
+normalize_domain() {
+    domain_to_normalize=$1
+    domain_to_normalize=${domain_to_normalize#http://}
+    domain_to_normalize=${domain_to_normalize#https://}
+    domain_to_normalize=${domain_to_normalize%/}
+    case "$domain_to_normalize" in
+        ""|*/*|*:*|*[!A-Za-z0-9.-]*|.*|*.|-*|*-)
+            die "domain must be a valid hostname without scheme, path, or port"
+            ;;
+    esac
+    printf '%s\n' "$domain_to_normalize"
+}
+
+validate_proxy_mode() {
+    case "$1" in
+        bundled|external) ;;
+        *) die "proxy mode must be bundled or external" ;;
+    esac
+}
+
+validate_port() {
+    port_to_validate=$1
+    label=$2
+    case "$port_to_validate" in
+        ""|*[!0-9]*) die "$label must be a port number" ;;
+    esac
+    if [ "$port_to_validate" -lt 1 ] || [ "$port_to_validate" -gt 65535 ]; then
+        die "$label must be between 1 and 65535"
+    fi
+}
+
+listening_port_owner() {
+    inspected_port=$1
+
+    if command -v ss >/dev/null 2>&1; then
+        if socket_lines=$(ss -H -ltnp 2>/dev/null); then
+            socket_line=$(printf '%s\n' "$socket_lines" | awk -v port="$inspected_port" '$4 ~ (":" port "$") { print; exit }')
+            [ -n "$socket_line" ] || return 1
+            socket_owner=$(printf '%s\n' "$socket_line" | sed -n 's/.*users:(("\([^"]*\)",pid=\([0-9][0-9]*\).*/\1 (PID \2)/p')
+            [ -n "$socket_owner" ] || socket_owner="another process"
+            printf '%s\n' "$socket_owner"
+            return 0
+        fi
+    fi
+
+    if command -v lsof >/dev/null 2>&1; then
+        lsof_fields=$(lsof -nP -iTCP:"$inspected_port" -sTCP:LISTEN -Fpc 2>/dev/null || true)
+        if [ -n "$lsof_fields" ]; then
+            port_pid=$(printf '%s\n' "$lsof_fields" | sed -n 's/^p//p' | awk 'NR == 1 { print; exit }')
+            process_name=$(printf '%s\n' "$lsof_fields" | sed -n 's/^c//p' | awk 'NR == 1 { print; exit }')
+            if [ -n "$process_name" ] && [ -n "$port_pid" ]; then
+                printf '%s (PID %s)\n' "$process_name" "$port_pid"
+            else
+                printf 'another process\n'
+            fi
+            return 0
+        fi
+    fi
+
+    if command -v fuser >/dev/null 2>&1; then
+        port_pids=$(fuser -n tcp "$inspected_port" 2>/dev/null || true)
+        if [ -n "$port_pids" ]; then
+            # shellcheck disable=SC2086
+            set -- $port_pids
+            port_pid=$1
+            process_name=$(ps -p "$port_pid" -o comm= 2>/dev/null | awk 'NR == 1 { print; exit }')
+            if [ -n "$process_name" ]; then
+                printf '%s (PID %s)\n' "$process_name" "$port_pid"
+            else
+                printf 'another process (PID %s)\n' "$port_pid"
+            fi
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+check_proxy_ports() {
+    checked_proxy_mode=$1
+    checked_proxy_port=$2
+    external_proxy_command=$3
+    conflicts=0
+
+    if [ "$checked_proxy_mode" = "bundled" ]; then
+        checked_ports="80 443"
+    else
+        checked_ports=$checked_proxy_port
+    fi
+
+    for checked_port in $checked_ports; do
+        if port_owner=$(listening_port_owner "$checked_port"); then
+            echo "Port $checked_port is already in use by $port_owner." >&2
+            conflicts=1
+        fi
+    done
+
+    [ "$conflicts" -eq 0 ] && return 0
+
+    echo "" >&2
+    if [ "$checked_proxy_mode" = "bundled" ]; then
+        echo "Bundled Caddy needs ports 80 and 443." >&2
+        echo "Use the existing reverse proxy with:" >&2
+        echo "  $external_proxy_command" >&2
+        echo "Or stop the listed service and rerun setup." >&2
+    else
+        echo "Choose another loopback gateway port with --proxy-port PORT." >&2
+    fi
+    exit 1
+}
+
+set_env() {
+    key=$1
+    value=$2
+    temp_env=$(mktemp ./.env.tmp.XXXXXX)
+    found=0
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            "$key="*)
+                printf '%s=%s\n' "$key" "$value"
+                found=1
+                ;;
+            *) printf '%s\n' "$line" ;;
+        esac
+    done < .env > "$temp_env"
+
+    if [ "$found" -eq 0 ]; then
+        printf '%s=%s\n' "$key" "$value" >> "$temp_env"
+    fi
+
+    chmod 600 "$temp_env"
+    mv "$temp_env" .env
+}
+
+configure_domain_settings() {
+    configured_domain=$1
+    configured_proxy_mode=$2
+    configured_proxy_port=$3
+    redirect_url="https://${configured_domain}"
+
+    if [ "$configured_proxy_mode" = "external" ]; then
+        configured_compose_files="compose.yml:compose.external-proxy.yml"
+    else
+        configured_compose_files="compose.yml:compose.production.yml"
+    fi
+
+    set_env COMPOSE_FILE "$configured_compose_files"
+    set_env NUVIO_PROXY_MODE "$configured_proxy_mode"
+    set_env NUVIO_PROXY_PORT "$configured_proxy_port"
+    set_env NUVIO_DOMAIN "$configured_domain"
+    set_env SUPABASE_PUBLIC_URL "https://${configured_domain}"
+    set_env API_EXTERNAL_URL "https://${configured_domain}"
+    set_env SITE_URL "https://${configured_domain}"
+    set_env ADDITIONAL_REDIRECT_URLS "$redirect_url"
+    set_env MAILER_EXTERNAL_HOSTS "$configured_domain"
+    set_env WEBAUTHN_RP_ID "$configured_domain"
+    set_env WEBAUTHN_RP_ORIGINS "$redirect_url"
+}
+
+validate_domain_configuration() {
+    validation_domain=$1
+    validation_proxy_mode=$2
+    validation_proxy_port=$3
+    validation_redirect_url="https://${validation_domain}"
+
+    if [ "$validation_proxy_mode" = "external" ]; then
+        validation_compose_files="compose.yml:compose.external-proxy.yml"
+    else
+        validation_compose_files="compose.yml:compose.production.yml"
+    fi
+
+    COMPOSE_FILE="$validation_compose_files" \
+    NUVIO_PROXY_MODE="$validation_proxy_mode" \
+    NUVIO_PROXY_PORT="$validation_proxy_port" \
+    NUVIO_DOMAIN="$validation_domain" \
+    SUPABASE_PUBLIC_URL="https://${validation_domain}" \
+    API_EXTERNAL_URL="https://${validation_domain}" \
+    SITE_URL="https://${validation_domain}" \
+    ADDITIONAL_REDIRECT_URLS="$validation_redirect_url" \
+    MAILER_EXTERNAL_HOSTS="$validation_domain" \
+    WEBAUTHN_RP_ID="$validation_domain" \
+    WEBAUTHN_RP_ORIGINS="$validation_redirect_url" \
+        docker compose config --quiet
+}
+
+active_compose_files() {
+    if [ "${COMPOSE_FILE+x}" = "x" ]; then
+        printf '%s\n' "$COMPOSE_FILE"
+    else
+        env_value COMPOSE_FILE
+    fi
+}
+
+deployment_proxy_mode() {
+    configured_proxy_mode=$(env_value NUVIO_PROXY_MODE 2>/dev/null || true)
+    case "$configured_proxy_mode" in
+        local|bundled|external)
+            printf '%s\n' "$configured_proxy_mode"
+            return
+            ;;
+    esac
+
+    case "$(active_compose_files)" in
+        *compose.external-proxy.yml*) printf 'external\n' ;;
+        *compose.production.yml*) printf 'bundled\n' ;;
+        *) printf 'local\n' ;;
+    esac
+}
+
+ensure_external_proxy_network() {
+    [ "$(deployment_proxy_mode)" = "external" ] || return 0
+
+    proxy_network=$(env_value NUVIO_PROXY_NETWORK 2>/dev/null || true)
+    [ -n "$proxy_network" ] || proxy_network="nuvio-proxy"
+    case "$proxy_network" in
+        *[!A-Za-z0-9_.-]*) die "NUVIO_PROXY_NETWORK contains unsupported characters" ;;
+    esac
+
+    if ! docker network inspect "$proxy_network" >/dev/null 2>&1; then
+        docker network create "$proxy_network" >/dev/null
+        echo "Created external proxy network: $proxy_network"
+    fi
+}
+
+account_dashboard_url() {
+    case "$(deployment_proxy_mode)" in
+        bundled|external)
+            env_value SUPABASE_PUBLIC_URL
+            return
+            ;;
+    esac
+
+    dashboard_port=$(env_value ACCOUNT_DASHBOARD_PORT)
+    [ -n "$dashboard_port" ] || dashboard_port=3000
+    case "$dashboard_port" in
+        *[!0-9]*) die "ACCOUNT_DASHBOARD_PORT must be a port number" ;;
+    esac
+    printf 'http://localhost:%s\n' "$dashboard_port"
+}
+
+print_external_proxy_instructions() {
+    external_domain=$1
+    external_port=$2
+
+    echo ""
+    echo "External proxy mode configured."
+    echo ""
+    echo "After ./nuvio up, Nuvio is available internally at http://127.0.0.1:${external_port}."
+    echo "HTTPS is not configured automatically. Your existing reverse proxy manages the TLS certificate."
+    echo ""
+    echo "Next:"
+    echo "1. Configure ${external_domain} in your existing reverse proxy."
+    echo "2. Proxy it to http://127.0.0.1:${external_port}."
+    echo "3. Obtain and install a TLS certificate for ${external_domain}."
+    echo "4. Run ./nuvio doctor."
+    echo ""
+    echo "Guide: docs/external-proxy.md"
+}
+
+setup() {
+    domain=""
+    proxy_mode=""
+    proxy_port=8080
+    proxy_port_set=0
+    catalog_url=""
+    with_studio=0
+    with_realtime=0
+    import_account_choice=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --domain) [ $# -ge 2 ] || die "--domain needs a value"; domain=$2; shift 2 ;;
+            --proxy) [ $# -ge 2 ] || die "--proxy needs bundled or external"; proxy_mode=$2; shift 2 ;;
+            --proxy-port) [ $# -ge 2 ] || die "--proxy-port needs a value"; proxy_port=$2; proxy_port_set=1; shift 2 ;;
+            --catalog-url) [ $# -ge 2 ] || die "--catalog-url needs a value"; catalog_url=$2; shift 2 ;;
+            --with-studio) with_studio=1; shift ;;
+            --with-realtime) with_realtime=1; shift ;;
+            --import-account) import_account_choice="yes"; shift ;;
+            --no-import-account) import_account_choice="no"; shift ;;
+            -h|--help) usage; exit 0 ;;
+            *) die "unknown setup option: $1" ;;
+        esac
+    done
+
+    if [ -n "$domain" ]; then
+        domain=$(normalize_domain "$domain")
+        [ -n "$proxy_mode" ] || proxy_mode="bundled"
+        validate_proxy_mode "$proxy_mode"
+        validate_port "$proxy_port" "--proxy-port"
+        if [ "$proxy_mode" = "bundled" ] && [ "$proxy_port_set" -eq 1 ]; then
+            die "--proxy-port is only used with --proxy external"
+        fi
+    else
+        [ -z "$proxy_mode" ] || die "--proxy requires --domain"
+        [ "$proxy_port_set" -eq 0 ] || die "--proxy-port requires --domain and --proxy external"
+    fi
+
+    [ ! -f .env ] || die ".env already exists; setup will not overwrite it"
+    command -v openssl >/dev/null 2>&1 || die "openssl is required"
+    require_docker
+
+    if [ -n "$domain" ]; then
+        check_proxy_ports "$proxy_mode" "$proxy_port" \
+            "./nuvio setup --domain $domain --proxy external"
+    fi
+
+    cp .env.example .env
+    sh scripts/generate-secrets.sh
+
+    profiles=""
+    if [ "$with_studio" -eq 1 ]; then
+        profiles="studio"
+    fi
+    if [ "$with_realtime" -eq 1 ]; then
+        [ -z "$profiles" ] || profiles="${profiles},"
+        profiles="${profiles}realtime"
+    fi
+    set_env COMPOSE_PROFILES "$profiles"
+    COMPOSE_PROFILES=$profiles
+    export COMPOSE_PROFILES
+
+    if [ -n "$catalog_url" ]; then
+        validate_http_url "$catalog_url" "--catalog-url"
+        set_env DEFAULT_CATALOG_URL "$catalog_url"
+    fi
+
+    if [ -n "$domain" ]; then
+        configure_domain_settings "$domain" "$proxy_mode" "$proxy_port"
+    fi
+
+    if [ -z "$import_account_choice" ] && [ -t 0 ]; then
+        echo ""
+        printf 'Import an account from official Nuvio after the first startup? [y/N] '
+        IFS= read -r answer || answer=""
+        case "$answer" in
+            y|Y|yes|YES|Yes) import_account_choice="yes" ;;
+            *) import_account_choice="no" ;;
+        esac
+    fi
+    [ -n "$import_account_choice" ] || import_account_choice="no"
+    if [ "$import_account_choice" = "yes" ]; then
+        set_env IMPORT_ACCOUNT_AFTER_UP true
+    else
+        set_env IMPORT_ACCOUNT_AFTER_UP false
+    fi
+
+    mkdir -p volumes/db/data backups
+    chmod 700 volumes/db/data
+    docker compose config --quiet
+
+    echo ""
+    echo "Nuvio backend configured."
+    echo "Start it with: ./nuvio up"
+    if [ "$import_account_choice" = "yes" ]; then
+        echo "The account importer will run after the first successful startup."
+    else
+        echo "Optional later import: ./nuvio import-account"
+    fi
+    if [ "$proxy_mode" = "external" ]; then
+        print_external_proxy_instructions "$domain" "$proxy_port"
+    fi
+}
+
+set_domain() {
+    case "${1:-}" in
+        -h|--help) usage; return ;;
+    esac
+
+    [ $# -ge 1 ] || die "set-domain needs a hostname"
+    domain=$(normalize_domain "$1")
+    shift
+
+    proxy_mode=""
+    proxy_port=""
+    proxy_port_set=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --proxy) [ $# -ge 2 ] || die "--proxy needs bundled or external"; proxy_mode=$2; shift 2 ;;
+            --proxy-port) [ $# -ge 2 ] || die "--proxy-port needs a value"; proxy_port=$2; proxy_port_set=1; shift 2 ;;
+            *) die "unknown set-domain option: $1" ;;
+        esac
+    done
+
+    require_env
+    require_docker
+    current_proxy_mode=$(deployment_proxy_mode)
+    current_proxy_port=$(env_value NUVIO_PROXY_PORT 2>/dev/null || true)
+    [ -n "$current_proxy_port" ] || current_proxy_port=8080
+
+    if [ -z "$proxy_mode" ]; then
+        if [ "$current_proxy_mode" = "external" ]; then
+            proxy_mode="external"
+        else
+            proxy_mode="bundled"
+        fi
+    fi
+    validate_proxy_mode "$proxy_mode"
+
+    if [ -z "$proxy_port" ]; then
+        if [ "$proxy_mode" = "external" ] && [ "$current_proxy_mode" = "external" ]; then
+            proxy_port=$current_proxy_port
+        else
+            proxy_port=8080
+        fi
+    fi
+    validate_port "$proxy_port" "--proxy-port"
+    if [ "$proxy_mode" = "bundled" ] && [ "$proxy_port_set" -eq 1 ]; then
+        die "--proxy-port is only used with --proxy external"
+    fi
+
+    if [ "$proxy_mode" != "$current_proxy_mode" ] || { [ "$proxy_mode" = "external" ] && [ "$proxy_port" != "$current_proxy_port" ]; }; then
+        check_proxy_ports "$proxy_mode" "$proxy_port" \
+            "./nuvio set-domain $domain --proxy external"
+    fi
+
+    validate_domain_configuration "$domain" "$proxy_mode" "$proxy_port"
+
+    domain_env_backup=$(mktemp ./.env.before-domain-XXXXXX)
+    cp .env "$domain_env_backup"
+    chmod 600 "$domain_env_backup"
+    trap 'mv "$domain_env_backup" .env' 0 1 2 15
+    configure_domain_settings "$domain" "$proxy_mode" "$proxy_port"
+    trap - 0 1 2 15
+    rm -f "$domain_env_backup"
+
+    if [ "$proxy_mode" = "external" ]; then
+        echo "Existing deployment secrets and data were preserved."
+        echo "Apply the change with: ./nuvio up"
+        print_external_proxy_instructions "$domain" "$proxy_port"
+    else
+        echo "HTTPS domain configured: https://${domain}"
+        echo "Existing deployment secrets and data were preserved."
+        echo "Apply the change with: ./nuvio up"
+    fi
+}
+
+migrate() {
+    require_env
+    require_docker
+    db_name=$(env_value POSTGRES_DB)
+
+    for migration in database/migrations/*.sql; do
+        name=$(basename "$migration")
+        version=${name%%_*}
+        table_exists=$(docker compose exec -T db psql -U supabase_admin -d "$db_name" -Atc "select to_regclass('nuvio_migrations.schema_migrations') is not null" 2>/dev/null || true)
+        applied="f"
+        if [ "$table_exists" = "t" ]; then
+            applied=$(docker compose exec -T db psql -U supabase_admin -d "$db_name" -Atc "select exists(select 1 from nuvio_migrations.schema_migrations where version = '$version')" 2>/dev/null || true)
+        fi
+
+        if [ "$applied" = "t" ]; then
+            continue
+        fi
+
+        echo "Applying $name"
+        docker compose exec -T db psql -v ON_ERROR_STOP=1 -U supabase_admin -d "$db_name" < "$migration"
+    done
+}
+
+configure_instance() {
+    require_env
+    require_docker
+    db_name=$(env_value POSTGRES_DB)
+    catalog_url=$(env_value DEFAULT_CATALOG_URL 2>/dev/null || true)
+    if [ -z "$catalog_url" ]; then
+        catalog_url="https://catalog.nuvio.tv/manifest.json"
+        set_env DEFAULT_CATALOG_URL "$catalog_url"
+    fi
+
+    validate_http_url "$catalog_url" "DEFAULT_CATALOG_URL"
+
+    docker compose exec -T db psql \
+        -v ON_ERROR_STOP=1 \
+        -v "catalog_url=$catalog_url" \
+        -U supabase_admin \
+        -d "$db_name" <<'SQL'
+INSERT INTO nuvio_private.instance_settings (key, value, updated_at)
+VALUES ('default_catalog_url', :'catalog_url', now())
+ON CONFLICT (key) DO UPDATE
+SET value = excluded.value,
+    updated_at = excluded.updated_at;
+SQL
+}
+
+seed_avatar_assets() {
+    require_env
+    command -v curl >/dev/null 2>&1 || die "curl is required to seed avatar assets"
+
+    avatar_dir="$ROOT/assets/avatars"
+    [ -d "$avatar_dir" ] || die "avatar seed directory is missing: $avatar_dir"
+
+    kong_port=$(env_value KONG_HTTP_PORT)
+    service_role_key=$(env_value SERVICE_ROLE_KEY)
+    case "$kong_port" in
+        ""|*[!0-9]*) die "KONG_HTTP_PORT must be a port number" ;;
+    esac
+    [ -n "$service_role_key" ] || die "SERVICE_ROLE_KEY is not configured"
+
+    storage_url="http://127.0.0.1:$kong_port/storage/v1/object"
+    asset_count=0
+    uploaded_count=0
+
+    for asset in "$avatar_dir"/*.png; do
+        [ -f "$asset" ] || continue
+        object_name=$(basename "$asset")
+        asset_count=$((asset_count + 1))
+        object_url="$storage_url/public/avatars/$object_name"
+
+        if curl -fsSI -o /dev/null "$object_url" 2>/dev/null; then
+            continue
+        fi
+
+        avatar_response=$(mktemp)
+        if ! curl --fail-with-body -sS -o "$avatar_response" \
+            -X POST \
+            -H "apikey: $service_role_key" \
+            -H "Authorization: Bearer $service_role_key" \
+            -H "Content-Type: image/png" \
+            -H "Cache-Control: public, max-age=31536000, immutable" \
+            -H "x-upsert: true" \
+            --data-binary "@$asset" \
+            "$storage_url/avatars/$object_name"; then
+            echo "ERROR: failed to upload avatar asset: $object_name" >&2
+            if [ -s "$avatar_response" ]; then
+                echo "Storage API response:" >&2
+                cat "$avatar_response" >&2
+                echo >&2
+            fi
+            rm -f "$avatar_response"
+            return 1
+        fi
+        rm -f "$avatar_response"
+        uploaded_count=$((uploaded_count + 1))
+    done
+
+    [ "$asset_count" -gt 0 ] || die "avatar seed directory contains no PNG assets"
+    echo "OK  Avatar catalog assets ($asset_count present, $uploaded_count uploaded)"
+}
+
+check_services() {
+    checked_dashboard_url=$1
+    checked_backend_url=$2
+    anon_key=$(env_value ANON_KEY)
+    expected_discovery_url=$(env_value SUPABASE_PUBLIC_URL)
+    expected_discovery_key=$anon_key
+    configured_publishable_key=$(env_value SUPABASE_PUBLISHABLE_KEY 2>/dev/null || true)
+    configured_secret_key=$(env_value SUPABASE_SECRET_KEY 2>/dev/null || true)
+
+    if [ -n "$configured_publishable_key" ] && [ -n "$configured_secret_key" ]; then
+        expected_discovery_key=$configured_publishable_key
+    fi
+
+    curl -fsS -o /dev/null "$checked_dashboard_url/account/login"
+    echo "OK  Account Dashboard"
+
+    if ! discovery_response=$(curl -fsS "${checked_backend_url%/}/.well-known/nuvio"); then
+        die "Backend discovery endpoint is unavailable"
+    fi
+    printf '%s' "$discovery_response" | grep -Fq '"version":1' || die "Backend discovery version is invalid"
+    printf '%s' "$discovery_response" | grep -Fq '"service":"nuvio"' || die "Backend discovery service is invalid"
+    printf '%s' "$discovery_response" | grep -Fq "\"backend_url\":\"$expected_discovery_url\"" || die "Backend discovery URL does not match SUPABASE_PUBLIC_URL"
+    printf '%s' "$discovery_response" | grep -Fq "\"publishable_key\":\"$expected_discovery_key\"" || die "Backend discovery publishable key is invalid"
+    echo "OK  Backend Discovery"
+
+    curl -fsS -o /dev/null -H "apikey: $anon_key" "$checked_backend_url/auth/v1/health"
+    echo "OK  Auth"
+    curl -fsS -o /dev/null -X POST -H "apikey: $anon_key" -H "Authorization: Bearer $anon_key" "$checked_backend_url/rest/v1/rpc/health_ping"
+    echo "OK  Database and REST API"
+    curl -fsS -o /dev/null -H "apikey: $anon_key" "$checked_backend_url/storage/v1/status"
+    echo "OK  Storage"
+    curl -fsS -o /dev/null -H "apikey: $anon_key" -H "Authorization: Bearer $anon_key" "$checked_backend_url/functions/v1/health-check"
+    echo "OK  Edge Functions"
+}
+
+doctor() {
+    require_env
+    command -v curl >/dev/null 2>&1 || die "curl is required for health checks"
+    check_services "$(account_dashboard_url)" "$(env_value SUPABASE_PUBLIC_URL)"
+}
+
+startup_doctor() {
+    command -v curl >/dev/null 2>&1 || die "curl is required for health checks"
+    if [ "$(deployment_proxy_mode)" = "external" ]; then
+        proxy_port=$(env_value NUVIO_PROXY_PORT 2>/dev/null || true)
+        [ -n "$proxy_port" ] || proxy_port=8080
+        validate_port "$proxy_port" "NUVIO_PROXY_PORT"
+        proxy_url="http://127.0.0.1:${proxy_port}"
+        check_services "$proxy_url" "$proxy_url"
+        echo "OK  External proxy upstream ($proxy_url)"
+        echo "Run ./nuvio doctor to verify the public HTTPS route."
+    else
+        doctor
+    fi
+}
+
+credentials() {
+    require_env
+    backend_url=$(env_value SUPABASE_PUBLIC_URL)
+    echo "Account dashboard:  $(account_dashboard_url)"
+    echo "Backend URL:       $backend_url"
+    echo "Discovery endpoint: ${backend_url%/}/.well-known/nuvio"
+    echo "Publishable key:   $(env_value ANON_KEY)"
+    if profile_enabled studio; then
+        echo "Studio URL:        http://localhost:$(env_value KONG_HTTP_PORT)"
+        echo "Studio username:   $(env_value DASHBOARD_USERNAME)"
+        echo "Studio password:   $(env_value DASHBOARD_PASSWORD)"
+    else
+        echo "Studio:            disabled"
+    fi
+}
+
+import_account() {
+    case "${1:-}" in
+        -h|--help) sh "$ROOT/scripts/import-account.sh" "$@"; return ;;
+    esac
+    require_env
+    require_docker
+    sh "$ROOT/scripts/import-account.sh" "$@"
+    set_env IMPORT_ACCOUNT_AFTER_UP false
+}
+
+create_backup() {
+    require_env
+    require_docker
+    command -v openssl >/dev/null 2>&1 || die "openssl is required"
+    mkdir -p backups
+    db_name=$(env_value POSTGRES_DB)
+    backup_id="nuvio-$(date -u +%Y%m%dT%H%M%SZ)-$(openssl rand -hex 3)"
+    target="$ROOT/backups/$backup_id"
+    mkdir -m 700 "$target"
+
+    docker compose exec -T db pg_dump \
+        -U supabase_admin \
+        -d "$db_name" \
+        --format=custom \
+        --data-only \
+        --no-owner \
+        --no-privileges \
+        --schema=public \
+        --schema=auth \
+        --schema=storage \
+        --schema=nuvio_private \
+        --schema=nuvio_migrations \
+        > "$target/database.dump"
+
+    host_uid=$(id -u)
+    host_gid=$(id -g)
+    docker compose run --rm --no-deps \
+        --entrypoint sh \
+        -e HOST_UID="$host_uid" \
+        -e HOST_GID="$host_gid" \
+        -v "$target:/backup:z" \
+        storage \
+        -c 'tar -czf /backup/storage.tar.gz -C /var/lib/storage . && chown "$HOST_UID:$HOST_GID" /backup/storage.tar.gz'
+
+    git_commit=$(git rev-parse HEAD 2>/dev/null || printf 'unknown')
+    migration_count=$(docker compose exec -T db psql -U supabase_admin -d "$db_name" -Atc "select count(*) from nuvio_migrations.schema_migrations")
+    {
+        printf 'FORMAT_VERSION=1\n'
+        printf 'CREATED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'GIT_COMMIT=%s\n' "$git_commit"
+        printf 'MIGRATION_COUNT=%s\n' "$migration_count"
+    } > "$target/manifest.env"
+
+    (
+        cd "$target"
+        sha256sum database.dump storage.tar.gz manifest.env > SHA256SUMS
+    )
+    chmod 600 "$target"/*
+
+    LAST_BACKUP_PATH="$target"
+}
+
+backup() {
+    require_env
+    require_docker
+    command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
+    ensure_external_proxy_network
+    stop_writers
+    trap 'docker compose up -d >/dev/null 2>&1 || true' 0 1 2 15
+    create_backup
+    docker compose up -d --wait
+    trap - 0 1 2 15
+    doctor
+    echo "Backup written to $LAST_BACKUP_PATH"
+}
+
+stop_writers() {
+    services=$(docker compose config --services | awk '$0 != "db" { print }')
+    if [ -n "$services" ]; then
+        # shellcheck disable=SC2086
+        docker compose stop $services
+    fi
+}
+
+restore() {
+    require_env
+    require_docker
+    ensure_external_proxy_network
+    command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
+
+    [ $# -ge 1 ] || die "restore needs a backup directory"
+    backup_dir=$1
+    shift
+    [ "${1:-}" = "--yes" ] || die "restore is destructive; rerun with: ./nuvio restore $backup_dir --yes"
+
+    case "$backup_dir" in
+        /*) ;;
+        *) backup_dir="$ROOT/$backup_dir" ;;
+    esac
+
+    [ -d "$backup_dir" ] || die "backup directory not found: $backup_dir"
+    for file in database.dump storage.tar.gz manifest.env SHA256SUMS; do
+        [ -f "$backup_dir/$file" ] || die "backup is missing $file"
+    done
+
+    format_version=$(grep '^FORMAT_VERSION=' "$backup_dir/manifest.env" | cut -d= -f2-)
+    [ "$format_version" = "1" ] || die "unsupported backup format: ${format_version:-unknown}"
+    (
+        cd "$backup_dir"
+        sha256sum -c SHA256SUMS
+    )
+
+    backup_migration_count=$(grep '^MIGRATION_COUNT=' "$backup_dir/manifest.env" | cut -d= -f2-)
+    case "$backup_migration_count" in
+        ""|*[!0-9]*) die "backup manifest has an invalid migration count" ;;
+    esac
+    db_name=$(env_value POSTGRES_DB)
+    current_migration_count=$(docker compose exec -T db psql -U supabase_admin -d "$db_name" -Atc "select count(*) from nuvio_migrations.schema_migrations")
+    if [ "$backup_migration_count" -gt "$current_migration_count" ]; then
+        die "backup uses a newer database schema; update this checkout before restoring"
+    fi
+
+    stop_writers
+    trap 'docker compose up -d >/dev/null 2>&1 || true' 0 1 2 15
+    echo "Creating a safety backup before restore..."
+    create_backup
+    trap - 0 1 2 15
+    echo "Safety backup written to $LAST_BACKUP_PATH"
+
+    docker compose exec -T db psql -v ON_ERROR_STOP=1 -U supabase_admin -d "$db_name" <<'SQL'
+DO $$
+DECLARE
+    table_list text;
+BEGIN
+    SELECT string_agg(format('%I.%I', schemaname, tablename), ', ')
+    INTO table_list
+    FROM pg_tables
+    WHERE schemaname IN ('public', 'auth', 'storage', 'nuvio_private', 'nuvio_migrations');
+
+    IF table_list IS NOT NULL THEN
+        EXECUTE 'TRUNCATE TABLE ' || table_list || ' RESTART IDENTITY CASCADE';
+    END IF;
+END
+$$;
+SQL
+
+    docker compose exec -T db pg_restore \
+        -U supabase_admin \
+        -d "$db_name" \
+        --data-only \
+        --disable-triggers \
+        --no-owner \
+        --no-privileges \
+        --exit-on-error \
+        < "$backup_dir/database.dump"
+
+    docker compose run --rm --no-deps \
+        --entrypoint sh \
+        -v "$backup_dir:/backup:ro,z" \
+        storage \
+        -c 'find /var/lib/storage -mindepth 1 -delete && tar -xzf /backup/storage.tar.gz -C /var/lib/storage'
+
+    docker compose up -d --wait
+    migrate
+    configure_instance
+    seed_avatar_assets
+    doctor
+    echo "Restore complete. Safety backup: $LAST_BACKUP_PATH"
+}
+
+usage() {
+    cat <<'EOF'
+Usage: ./nuvio <command>
+
+Commands:
+  setup [--domain HOST] [--proxy bundled|external] [--proxy-port PORT]
+        [--catalog-url URL]
+        [--with-studio] [--with-realtime]
+        [--import-account | --no-import-account]
+                                          Configure a local or HTTPS deployment
+  set-domain HOST [--proxy bundled|external] [--proxy-port PORT]
+                                          Move an existing deployment to HTTPS
+  up                                      Start, migrate, seed assets, and verify
+  down                                    Stop the stack without deleting data
+  restart                                 Restart the stack
+  status                                  Show service status
+  logs [SERVICE]                          Follow logs
+  migrate                                 Apply migrations and seed assets
+  configure                               Apply instance settings from .env
+  doctor                                  Check Discovery, Dashboard, Auth, REST, Storage, and Functions
+  credentials                             Show dashboard, client, and Studio details
+  import-account [--email EMAIL] [--yes]  Import an official Nuvio account
+  backup                                  Back up database and local Storage
+  restore BACKUP_DIR --yes                Restore database and local Storage
+  pull                                    Pull pinned container images
+EOF
+}
+
+command=${1:-help}
+[ $# -eq 0 ] || shift
+
+case "$command" in
+    setup) setup "$@" ;;
+    set-domain) set_domain "$@" ;;
+    up)
+        require_env
+        require_docker
+        ensure_external_proxy_network
+        docker compose up -d --wait
+        migrate
+        configure_instance
+        seed_avatar_assets
+        startup_doctor
+        if [ "$(env_value IMPORT_ACCOUNT_AFTER_UP 2>/dev/null || true)" = "true" ]; then
+            echo ""
+            echo "Starting the requested official account import..."
+            import_account
+        fi
+        ;;
+    down) require_env; require_docker; docker compose down "$@" ;;
+    restart) require_env; require_docker; docker compose restart "$@" ;;
+    status) require_env; require_docker; docker compose ps "$@" ;;
+    logs) require_env; require_docker; docker compose logs -f "$@" ;;
+    migrate) migrate; configure_instance; seed_avatar_assets ;;
+    configure) configure_instance ;;
+    doctor) doctor ;;
+    credentials) credentials ;;
+    import-account) import_account "$@" ;;
+    backup) backup ;;
+    restore) restore "$@" ;;
+    pull) require_env; require_docker; docker compose pull ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; exit 1 ;;
+esac

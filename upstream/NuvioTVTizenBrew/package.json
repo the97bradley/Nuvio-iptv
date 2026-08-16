@@ -1,0 +1,25 @@
+{
+  "name": "Nuvio TV",
+  "version": "0.3.10",
+  "type": "module",
+  "description": "Hosted TizenBrew wrapper for Nuvio TV",
+  "packageType": "app",
+  "appName": "Nuvio TV",
+  "appPath": "app/index.html",
+  "keys": [
+    "MediaPlay",
+    "MediaPause",
+    "MediaPlayPause",
+    "MediaStop",
+    "MediaFastForward",
+    "MediaRewind",
+    "MediaTrackPrevious",
+    "MediaTrackNext"
+  ],
+  "evaluateScriptOnDocumentStart": false,
+  "files": [
+    "app",
+    "icon.png",
+    "README.md"
+  ]
+}
