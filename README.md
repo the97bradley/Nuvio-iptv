@@ -13,9 +13,9 @@ Fork of [NuvioMedia](https://github.com/NuvioMedia) that keeps the full Nuvio me
 - New root tab: **Live**
 - Add remote **M3U / M3U8** playlists
 - Add **Stalker / Ministra** portals (portal URL + MAC)
+- Add **Xtream Codes** logins (server URL + username + password)
 - Group + search channels
 - Play through the existing Nuvio player (HLS / TS / etc.)
-- Xtream Codes still scaffolded only
 
 ## Layout
 

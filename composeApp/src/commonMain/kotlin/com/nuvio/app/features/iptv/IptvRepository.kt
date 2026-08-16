@@ -110,6 +110,31 @@ object IptvRepository {
         return persistAndLoad(source)
     }
 
+    suspend fun addXtreamSource(
+        name: String,
+        serverUrl: String,
+        username: String,
+        password: String,
+    ): Boolean {
+        val server = runCatching { XtreamCodesClient.normalizeServerBase(serverUrl) }.getOrElse { error ->
+            _state.update { it.copy(errorMessage = error.message ?: "Invalid server URL.") }
+            return false
+        }
+        if (username.isBlank() || password.isBlank()) {
+            _state.update { it.copy(errorMessage = "Xtream username and password are required.") }
+            return false
+        }
+        val source = IptvPlaylistSource(
+            id = "xtream-${LibraryClock.nowEpochMs()}-${Random.nextInt(100000, 999999)}",
+            name = name.trim().ifBlank { "Xtream Codes" },
+            kind = IptvSourceKind.Xtream,
+            url = server,
+            username = username.trim(),
+            password = password,
+        )
+        return persistAndLoad(source)
+    }
+
     suspend fun removeSource(sourceId: String) {
         mutex.withLock {
             val sources = _state.value.sources.filterNot { it.id == sourceId }
@@ -204,9 +229,11 @@ object IptvRepository {
             val channels = when (source.kind) {
                 IptvSourceKind.M3U -> fetchM3uChannels(source)
                 IptvSourceKind.Stalker -> clientFor(source).loadChannels(source.id)
-                IptvSourceKind.Xtream -> {
-                    throw UnsupportedOperationException("Xtream Codes is not implemented yet.")
-                }
+                IptvSourceKind.Xtream -> XtreamCodesClient(
+                    serverUrl = source.url,
+                    username = source.username.orEmpty(),
+                    password = source.password.orEmpty(),
+                ).loadChannels(source.id)
             }
             channelCache = channelCache + (sourceId to channels)
             val refreshed = source.copy(lastRefreshedAtEpochMs = currentTimeMillis())

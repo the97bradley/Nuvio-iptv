@@ -56,6 +56,7 @@ import nuvio.composeapp.generated.resources.iptv_add_m3u_action
 import nuvio.composeapp.generated.resources.iptv_add_playlist
 import nuvio.composeapp.generated.resources.iptv_add_playlist_action
 import nuvio.composeapp.generated.resources.iptv_add_stalker_action
+import nuvio.composeapp.generated.resources.iptv_add_xtream_action
 import nuvio.composeapp.generated.resources.iptv_cancel
 import nuvio.composeapp.generated.resources.iptv_channel_count
 import nuvio.composeapp.generated.resources.iptv_empty_body
@@ -63,13 +64,17 @@ import nuvio.composeapp.generated.resources.iptv_empty_title
 import nuvio.composeapp.generated.resources.iptv_groups_all
 import nuvio.composeapp.generated.resources.iptv_kind_m3u
 import nuvio.composeapp.generated.resources.iptv_kind_stalker
+import nuvio.composeapp.generated.resources.iptv_kind_xtream
 import nuvio.composeapp.generated.resources.iptv_mac_label
 import nuvio.composeapp.generated.resources.iptv_no_channels
+import nuvio.composeapp.generated.resources.iptv_password_label
 import nuvio.composeapp.generated.resources.iptv_playlist_name_label
 import nuvio.composeapp.generated.resources.iptv_playlist_url_label
 import nuvio.composeapp.generated.resources.iptv_portal_url_label
 import nuvio.composeapp.generated.resources.iptv_remove_playlist
 import nuvio.composeapp.generated.resources.iptv_search_channels
+import nuvio.composeapp.generated.resources.iptv_server_url_label
+import nuvio.composeapp.generated.resources.iptv_username_label
 import org.jetbrains.compose.resources.stringResource
 
 @Composable
@@ -105,6 +110,12 @@ fun LiveTvScreen(
             onConfirmStalker = { name, portalUrl, mac ->
                 scope.launch {
                     val ok = IptvRepository.addStalkerSource(name, portalUrl, mac)
+                    if (ok) showAddDialog = false
+                }
+            },
+            onConfirmXtream = { name, server, user, pass ->
+                scope.launch {
+                    val ok = IptvRepository.addXtreamSource(name, server, user, pass)
                     if (ok) showAddDialog = false
                 }
             },
@@ -362,28 +373,41 @@ private fun AddSourceDialog(
     onDismiss: () -> Unit,
     onConfirmM3u: (name: String, url: String) -> Unit,
     onConfirmStalker: (name: String, portalUrl: String, mac: String) -> Unit,
+    onConfirmXtream: (name: String, serverUrl: String, username: String, password: String) -> Unit,
 ) {
     var kind by rememberSaveable { mutableStateOf(IptvSourceKind.M3U.name) }
     var name by rememberSaveable { mutableStateOf("") }
     var url by rememberSaveable { mutableStateOf("") }
     var mac by rememberSaveable { mutableStateOf("") }
-    val isStalker = kind == IptvSourceKind.Stalker.name
+    var username by rememberSaveable { mutableStateOf("") }
+    var password by rememberSaveable { mutableStateOf("") }
+    val selectedKind = runCatching { IptvSourceKind.valueOf(kind) }.getOrDefault(IptvSourceKind.M3U)
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(Res.string.iptv_add_playlist)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s12)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s8)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s8),
+                ) {
                     FilterChip(
-                        selected = !isStalker,
+                        selected = selectedKind == IptvSourceKind.M3U,
                         onClick = { kind = IptvSourceKind.M3U.name },
                         label = { Text(stringResource(Res.string.iptv_kind_m3u)) },
                     )
                     FilterChip(
-                        selected = isStalker,
+                        selected = selectedKind == IptvSourceKind.Stalker,
                         onClick = { kind = IptvSourceKind.Stalker.name },
                         label = { Text(stringResource(Res.string.iptv_kind_stalker)) },
+                    )
+                    FilterChip(
+                        selected = selectedKind == IptvSourceKind.Xtream,
+                        onClick = { kind = IptvSourceKind.Xtream.name },
+                        label = { Text(stringResource(Res.string.iptv_kind_xtream)) },
                     )
                 }
                 OutlinedTextField(
@@ -400,42 +424,66 @@ private fun AddSourceDialog(
                     singleLine = true,
                     label = {
                         Text(
-                            if (isStalker) {
-                                stringResource(Res.string.iptv_portal_url_label)
-                            } else {
-                                stringResource(Res.string.iptv_playlist_url_label)
+                            when (selectedKind) {
+                                IptvSourceKind.Stalker -> stringResource(Res.string.iptv_portal_url_label)
+                                IptvSourceKind.Xtream -> stringResource(Res.string.iptv_server_url_label)
+                                IptvSourceKind.M3U -> stringResource(Res.string.iptv_playlist_url_label)
                             },
                         )
                     },
                 )
-                if (isStalker) {
-                    OutlinedTextField(
-                        value = mac,
-                        onValueChange = { mac = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        label = { Text(stringResource(Res.string.iptv_mac_label)) },
-                        placeholder = { Text("00:1A:79:12:34:56") },
-                    )
+                when (selectedKind) {
+                    IptvSourceKind.Stalker -> {
+                        OutlinedTextField(
+                            value = mac,
+                            onValueChange = { mac = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            label = { Text(stringResource(Res.string.iptv_mac_label)) },
+                            placeholder = { Text("00:1A:79:12:34:56") },
+                        )
+                    }
+                    IptvSourceKind.Xtream -> {
+                        OutlinedTextField(
+                            value = username,
+                            onValueChange = { username = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            label = { Text(stringResource(Res.string.iptv_username_label)) },
+                        )
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            label = { Text(stringResource(Res.string.iptv_password_label)) },
+                        )
+                    }
+                    IptvSourceKind.M3U -> Unit
                 }
             }
         },
         confirmButton = {
+            val enabled = when (selectedKind) {
+                IptvSourceKind.M3U -> url.isNotBlank()
+                IptvSourceKind.Stalker -> url.isNotBlank() && mac.isNotBlank()
+                IptvSourceKind.Xtream -> url.isNotBlank() && username.isNotBlank() && password.isNotBlank()
+            }
             TextButton(
                 onClick = {
-                    if (isStalker) {
-                        onConfirmStalker(name, url, mac)
-                    } else {
-                        onConfirmM3u(name, url)
+                    when (selectedKind) {
+                        IptvSourceKind.M3U -> onConfirmM3u(name, url)
+                        IptvSourceKind.Stalker -> onConfirmStalker(name, url, mac)
+                        IptvSourceKind.Xtream -> onConfirmXtream(name, url, username, password)
                     }
                 },
-                enabled = url.isNotBlank() && (!isStalker || mac.isNotBlank()),
+                enabled = enabled,
             ) {
                 Text(
-                    if (isStalker) {
-                        stringResource(Res.string.iptv_add_stalker_action)
-                    } else {
-                        stringResource(Res.string.iptv_add_m3u_action)
+                    when (selectedKind) {
+                        IptvSourceKind.M3U -> stringResource(Res.string.iptv_add_m3u_action)
+                        IptvSourceKind.Stalker -> stringResource(Res.string.iptv_add_stalker_action)
+                        IptvSourceKind.Xtream -> stringResource(Res.string.iptv_add_xtream_action)
                     },
                 )
             }

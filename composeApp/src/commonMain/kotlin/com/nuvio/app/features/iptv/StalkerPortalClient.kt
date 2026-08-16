@@ -66,18 +66,27 @@ internal class StalkerPortalClient(
             return cleanedCmd
         }
 
-        val encodedCmd = cmd.encodeURLParameter()
-        val payload = apiGet(
-            type = "itv",
-            action = "create_link",
-            extraQuery = "cmd=$encodedCmd&series=&forced_storage=undefined&disable_ad=0&download=0",
-            includeTokenCookie = false,
-        )
-        val link = payload.string("cmd")
-            ?.replace("ffmpeg ", "")
-            ?.replace("ffrt ", "")
-            ?.trim()
-            .orEmpty()
+        suspend fun requestLink(): String {
+            val encodedCmd = cmd.encodeURLParameter()
+            val payload = apiGet(
+                type = "itv",
+                action = "create_link",
+                extraQuery = "cmd=$encodedCmd&series=&forced_storage=undefined&disable_ad=0&download=0",
+                includeTokenCookie = false,
+            )
+            return payload.string("cmd")
+                ?.replace("ffmpeg ", "")
+                ?.replace("ffrt ", "")
+                ?.trim()
+                .orEmpty()
+        }
+
+        var link = requestLink()
+        if (link.isBlank()) {
+            token = ""
+            ensureAuthenticated()
+            link = requestLink()
+        }
         if (link.isBlank()) {
             error("Portal did not return a playable link for this channel.")
         }

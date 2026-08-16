@@ -2,7 +2,7 @@ package com.nuvio.app.features.iptv
 
 /**
  * IPTV source kinds supported by the Live tab.
- * M3U and Stalker Portal are implemented; Xtream is next.
+ * M3U, Stalker Portal, and Xtream Codes are implemented.
  */
 enum class IptvSourceKind {
     M3U,
