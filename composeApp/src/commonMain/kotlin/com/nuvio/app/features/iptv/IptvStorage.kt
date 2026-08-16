@@ -17,6 +17,7 @@ private data class StoredIptvSource(
     val url: String,
     val username: String? = null,
     val password: String? = null,
+    val macAddress: String? = null,
     val epgUrl: String? = null,
     val lastRefreshedAtEpochMs: Long? = null,
 )
@@ -48,6 +49,7 @@ internal object IptvStorage {
                 url = stored.url,
                 username = stored.username,
                 password = stored.password,
+                macAddress = stored.macAddress,
                 epgUrl = stored.epgUrl,
                 lastRefreshedAtEpochMs = stored.lastRefreshedAtEpochMs,
             )
@@ -65,6 +67,7 @@ internal object IptvStorage {
                     url = it.url,
                     username = it.username,
                     password = it.password,
+                    macAddress = it.macAddress,
                     epgUrl = it.epgUrl,
                     lastRefreshedAtEpochMs = it.lastRefreshedAtEpochMs,
                 )

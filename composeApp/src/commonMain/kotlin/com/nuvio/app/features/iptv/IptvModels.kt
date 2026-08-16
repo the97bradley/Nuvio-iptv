@@ -2,7 +2,7 @@ package com.nuvio.app.features.iptv
 
 /**
  * IPTV source kinds supported by the Live tab.
- * Xtream / Stalker land later; M3U is the Android v1 path.
+ * M3U and Stalker Portal are implemented; Xtream is next.
  */
 enum class IptvSourceKind {
     M3U,
@@ -14,10 +14,12 @@ data class IptvPlaylistSource(
     val id: String,
     val name: String,
     val kind: IptvSourceKind = IptvSourceKind.M3U,
-    /** Remote playlist URL or local content URI string. */
+    /** Remote playlist URL or Stalker portal base URL. */
     val url: String,
     val username: String? = null,
     val password: String? = null,
+    /** MAG-style MAC used by Stalker portals (e.g. 00:1A:79:12:34:56). */
+    val macAddress: String? = null,
     val epgUrl: String? = null,
     val lastRefreshedAtEpochMs: Long? = null,
 )
@@ -31,6 +33,8 @@ data class IptvChannel(
     val tvgId: String? = null,
     val tvgName: String? = null,
     val sourceId: String,
+    /** Stalker channel cmd; resolved to a stream URL via create_link at play time. */
+    val playbackCmd: String? = null,
     val headers: Map<String, String> = emptyMap(),
 )
 

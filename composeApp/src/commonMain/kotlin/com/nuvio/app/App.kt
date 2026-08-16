@@ -1989,14 +1989,27 @@ private fun MainAppContent(
                                             }
                                         },
                                         onPlayIptvChannel = { channel ->
-                                            val playerLaunch = IptvRepository.playerLaunchFor(channel)
-                                            if (playerSettingsUiState.externalPlayerEnabled) {
-                                                coroutineScope.launch { openExternalPlayback(playerLaunch) }
-                                            } else {
-                                                val launchId = PlayerLaunchStore.put(playerLaunch)
-                                                navController.navigate(
-                                                    PlayerRoute(launchId = launchId, title = playerLaunch.title),
-                                                )
+                                            coroutineScope.launch {
+                                                val playerLaunch = runCatching {
+                                                    IptvRepository.resolvePlayerLaunch(channel)
+                                                }.getOrElse { error ->
+                                                    NuvioToastController.show(
+                                                        error.message?.takeIf { it.isNotBlank() }
+                                                            ?: "Failed to open IPTV channel.",
+                                                    )
+                                                    return@launch
+                                                }
+                                                if (playerSettingsUiState.externalPlayerEnabled) {
+                                                    openExternalPlayback(playerLaunch)
+                                                } else {
+                                                    val launchId = PlayerLaunchStore.put(playerLaunch)
+                                                    navController.navigate(
+                                                        PlayerRoute(
+                                                            launchId = launchId,
+                                                            title = playerLaunch.title,
+                                                        ),
+                                                    )
+                                                }
                                             }
                                         },
                                         onConnectCloudClick = {

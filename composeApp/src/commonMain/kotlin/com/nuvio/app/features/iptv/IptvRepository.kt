@@ -22,6 +22,7 @@ object IptvRepository {
     val state: StateFlow<IptvUiState> = _state.asStateFlow()
 
     private var channelCache: Map<String, List<IptvChannel>> = emptyMap()
+    private val stalkerClients = mutableMapOf<String, StalkerPortalClient>()
 
     suspend fun ensureLoaded() {
         if (_state.value.isLoaded) return
@@ -43,6 +44,7 @@ object IptvRepository {
             )
         }
         channelCache = emptyMap()
+        stalkerClients.clear()
         if (selected != null) {
             loadChannelsForSource(selected, forceNetwork = false)
         }
@@ -85,20 +87,27 @@ object IptvRepository {
             kind = IptvSourceKind.M3U,
             url = trimmedUrl,
         )
-        mutex.withLock {
-            val sources = _state.value.sources + source
-            IptvStorage.save(sources, source.id)
-            _state.update {
-                it.copy(
-                    sources = sources,
-                    selectedSourceId = source.id,
-                    selectedGroupTitle = null,
-                    query = "",
-                    errorMessage = null,
-                )
-            }
+        return persistAndLoad(source)
+    }
+
+    suspend fun addStalkerSource(name: String, portalUrl: String, macAddress: String): Boolean {
+        val trimmedUrl = portalUrl.trim()
+        val mac = runCatching { StalkerPortalClient.normalizeMac(macAddress) }.getOrElse { error ->
+            _state.update { it.copy(errorMessage = error.message ?: "Invalid MAC address.") }
+            return false
         }
-        return loadChannelsForSource(source.id, forceNetwork = true)
+        if (trimmedUrl.isEmpty()) {
+            _state.update { it.copy(errorMessage = "Portal URL is required.") }
+            return false
+        }
+        val source = IptvPlaylistSource(
+            id = "stalker-${LibraryClock.nowEpochMs()}-${Random.nextInt(100000, 999999)}",
+            name = name.trim().ifBlank { "Stalker Portal" },
+            kind = IptvSourceKind.Stalker,
+            url = trimmedUrl,
+            macAddress = mac,
+        )
+        return persistAndLoad(source)
     }
 
     suspend fun removeSource(sourceId: String) {
@@ -110,6 +119,7 @@ object IptvRepository {
             }
             IptvStorage.save(sources, nextSelected)
             channelCache = channelCache - sourceId
+            stalkerClients.remove(sourceId)
             _state.update {
                 it.copy(
                     sources = sources,
@@ -126,7 +136,20 @@ object IptvRepository {
 
     suspend fun refreshSelectedSource(): Boolean {
         val sourceId = _state.value.selectedSourceId ?: return false
+        stalkerClients.remove(sourceId)
         return loadChannelsForSource(sourceId, forceNetwork = true)
+    }
+
+    suspend fun resolvePlayerLaunch(channel: IptvChannel): PlayerLaunch {
+        val source = _state.value.sources.firstOrNull { it.id == channel.sourceId }
+        val streamUrl = when {
+            !channel.playbackCmd.isNullOrBlank() && source?.kind == IptvSourceKind.Stalker -> {
+                clientFor(source).createPlaybackUrl(channel.playbackCmd)
+            }
+            channel.streamUrl.isNotBlank() -> channel.streamUrl
+            else -> error("This channel has no playable URL.")
+        }
+        return playerLaunchFor(channel.copy(streamUrl = streamUrl))
     }
 
     fun playerLaunchFor(channel: IptvChannel): PlayerLaunch {
@@ -150,6 +173,23 @@ object IptvRepository {
         )
     }
 
+    private suspend fun persistAndLoad(source: IptvPlaylistSource): Boolean {
+        mutex.withLock {
+            val sources = _state.value.sources + source
+            IptvStorage.save(sources, source.id)
+            _state.update {
+                it.copy(
+                    sources = sources,
+                    selectedSourceId = source.id,
+                    selectedGroupTitle = null,
+                    query = "",
+                    errorMessage = null,
+                )
+            }
+        }
+        return loadChannelsForSource(source.id, forceNetwork = true)
+    }
+
     private suspend fun loadChannelsForSource(sourceId: String, forceNetwork: Boolean): Boolean {
         val source = _state.value.sources.firstOrNull { it.id == sourceId } ?: return false
         if (!forceNetwork) {
@@ -163,10 +203,9 @@ object IptvRepository {
         return try {
             val channels = when (source.kind) {
                 IptvSourceKind.M3U -> fetchM3uChannels(source)
-                IptvSourceKind.Xtream, IptvSourceKind.Stalker -> {
-                    throw UnsupportedOperationException(
-                        "${source.kind.name} sources are scaffolded but not implemented yet.",
-                    )
+                IptvSourceKind.Stalker -> clientFor(source).loadChannels(source.id)
+                IptvSourceKind.Xtream -> {
+                    throw UnsupportedOperationException("Xtream Codes is not implemented yet.")
                 }
             }
             channelCache = channelCache + (sourceId to channels)
@@ -187,6 +226,14 @@ object IptvRepository {
                 )
             }
             false
+        }
+    }
+
+    private fun clientFor(source: IptvPlaylistSource): StalkerPortalClient {
+        val mac = source.macAddress?.takeIf { it.isNotBlank() }
+            ?: error("Stalker source is missing a MAC address.")
+        return stalkerClients.getOrPut(source.id) {
+            StalkerPortalClient(portalUrl = source.url, macAddress = mac)
         }
     }
 

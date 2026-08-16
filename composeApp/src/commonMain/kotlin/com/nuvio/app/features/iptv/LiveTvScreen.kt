@@ -52,16 +52,22 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.compose_nav_live
+import nuvio.composeapp.generated.resources.iptv_add_m3u_action
 import nuvio.composeapp.generated.resources.iptv_add_playlist
 import nuvio.composeapp.generated.resources.iptv_add_playlist_action
+import nuvio.composeapp.generated.resources.iptv_add_stalker_action
 import nuvio.composeapp.generated.resources.iptv_cancel
 import nuvio.composeapp.generated.resources.iptv_channel_count
 import nuvio.composeapp.generated.resources.iptv_empty_body
 import nuvio.composeapp.generated.resources.iptv_empty_title
 import nuvio.composeapp.generated.resources.iptv_groups_all
+import nuvio.composeapp.generated.resources.iptv_kind_m3u
+import nuvio.composeapp.generated.resources.iptv_kind_stalker
+import nuvio.composeapp.generated.resources.iptv_mac_label
 import nuvio.composeapp.generated.resources.iptv_no_channels
 import nuvio.composeapp.generated.resources.iptv_playlist_name_label
 import nuvio.composeapp.generated.resources.iptv_playlist_url_label
+import nuvio.composeapp.generated.resources.iptv_portal_url_label
 import nuvio.composeapp.generated.resources.iptv_remove_playlist
 import nuvio.composeapp.generated.resources.iptv_search_channels
 import org.jetbrains.compose.resources.stringResource
@@ -88,11 +94,17 @@ fun LiveTvScreen(
     }
 
     if (showAddDialog) {
-        AddPlaylistDialog(
+        AddSourceDialog(
             onDismiss = { showAddDialog = false },
-            onConfirm = { name, url ->
+            onConfirmM3u = { name, url ->
                 scope.launch {
                     val ok = IptvRepository.addM3uSource(name, url)
+                    if (ok) showAddDialog = false
+                }
+            },
+            onConfirmStalker = { name, portalUrl, mac ->
+                scope.launch {
+                    val ok = IptvRepository.addStalkerSource(name, portalUrl, mac)
                     if (ok) showAddDialog = false
                 }
             },
@@ -145,7 +157,7 @@ fun LiveTvScreen(
                             },
                             label = {
                                 Text(
-                                    text = source.name,
+                                    text = "${source.name} (${source.kind.name})",
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
@@ -346,18 +358,34 @@ private fun ChannelRow(
 }
 
 @Composable
-private fun AddPlaylistDialog(
+private fun AddSourceDialog(
     onDismiss: () -> Unit,
-    onConfirm: (name: String, url: String) -> Unit,
+    onConfirmM3u: (name: String, url: String) -> Unit,
+    onConfirmStalker: (name: String, portalUrl: String, mac: String) -> Unit,
 ) {
+    var kind by rememberSaveable { mutableStateOf(IptvSourceKind.M3U.name) }
     var name by rememberSaveable { mutableStateOf("") }
     var url by rememberSaveable { mutableStateOf("") }
+    var mac by rememberSaveable { mutableStateOf("") }
+    val isStalker = kind == IptvSourceKind.Stalker.name
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(Res.string.iptv_add_playlist)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s12)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s8)) {
+                    FilterChip(
+                        selected = !isStalker,
+                        onClick = { kind = IptvSourceKind.M3U.name },
+                        label = { Text(stringResource(Res.string.iptv_kind_m3u)) },
+                    )
+                    FilterChip(
+                        selected = isStalker,
+                        onClick = { kind = IptvSourceKind.Stalker.name },
+                        label = { Text(stringResource(Res.string.iptv_kind_stalker)) },
+                    )
+                }
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -370,16 +398,46 @@ private fun AddPlaylistDialog(
                     onValueChange = { url = it },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    label = { Text(stringResource(Res.string.iptv_playlist_url_label)) },
+                    label = {
+                        Text(
+                            if (isStalker) {
+                                stringResource(Res.string.iptv_portal_url_label)
+                            } else {
+                                stringResource(Res.string.iptv_playlist_url_label)
+                            },
+                        )
+                    },
                 )
+                if (isStalker) {
+                    OutlinedTextField(
+                        value = mac,
+                        onValueChange = { mac = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text(stringResource(Res.string.iptv_mac_label)) },
+                        placeholder = { Text("00:1A:79:12:34:56") },
+                    )
+                }
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { onConfirm(name, url) },
-                enabled = url.isNotBlank(),
+                onClick = {
+                    if (isStalker) {
+                        onConfirmStalker(name, url, mac)
+                    } else {
+                        onConfirmM3u(name, url)
+                    }
+                },
+                enabled = url.isNotBlank() && (!isStalker || mac.isNotBlank()),
             ) {
-                Text(stringResource(Res.string.iptv_add_playlist_action))
+                Text(
+                    if (isStalker) {
+                        stringResource(Res.string.iptv_add_stalker_action)
+                    } else {
+                        stringResource(Res.string.iptv_add_m3u_action)
+                    },
+                )
             }
         },
         dismissButton = {
