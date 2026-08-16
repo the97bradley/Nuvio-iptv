@@ -40,6 +40,10 @@ export function openIptvAddSourceDialog({ onAdded = null } = {}) {
           <span>${escapeHtml(t("live_m3u_url_label", {}, "M3U URL"))}</span>
           <input class="live-input" data-field="url" type="url" placeholder="https://…" />
         </label>
+        <label class="live-field">
+          <span>${escapeHtml(t("live_epg_url_label", {}, "EPG URL (optional XMLTV)"))}</span>
+          <input class="live-input" data-field="epgUrl" type="url" placeholder="https://…/guide.xml" />
+        </label>
       </div>
       <div data-fields="Stalker" hidden>
         <label class="live-field">
@@ -112,7 +116,7 @@ export function openIptvAddSourceDialog({ onAdded = null } = {}) {
             const errorEl = content.querySelector('[data-role="error"]');
             let ok = null;
             if (kind === "M3U") {
-              ok = await IptvRepository.addM3uSource(value("name"), value("url"));
+              ok = await IptvRepository.addM3uSource(value("name"), value("url"), value("epgUrl"));
             } else if (kind === "Stalker") {
               ok = await IptvRepository.addStalkerSource(
                 value("name"),

@@ -106,6 +106,55 @@ internal class XtreamCodesClient(
         return "$serverBase/live/${encPath(user)}/${encPath(pass)}/$streamId.$ext"
     }
 
+    suspend fun fetchStreamEpg(
+        streamId: String,
+        windowStartMs: Long,
+        windowEndMs: Long,
+    ): List<IptvProgram> {
+        val id = streamId.trim()
+        if (id.isEmpty()) return emptyList()
+        authenticate()
+        var listings = emptyList<JsonElement>()
+        runCatching {
+            val payload = getJson(
+                "$playerApi?username=${enc(user)}&password=${enc(pass)}&action=get_simple_data_table&stream_id=${enc(id)}",
+            )
+            listings = payload.asObjectOrNull()?.get("epg_listings")?.asArrayOrNull().orEmpty()
+        }
+        if (listings.isEmpty()) {
+            runCatching {
+                val payload = getJson(
+                    "$playerApi?username=${enc(user)}&password=${enc(pass)}&action=get_short_epg&stream_id=${enc(id)}&limit=50",
+                )
+                listings = payload.asObjectOrNull()?.get("epg_listings")?.asArrayOrNull().orEmpty()
+            }
+        }
+        return listings.mapNotNull { element ->
+            val obj = element.asObjectOrNull() ?: return@mapNotNull null
+            val startMs = IptvEpg.parseLooseTime(obj["start_timestamp"])
+                ?: IptvEpg.parseLooseTime(obj.string("start"))
+                ?: IptvEpg.parseLooseTime(obj.string("time"))
+            val endMs = IptvEpg.parseLooseTime(obj["stop_timestamp"])
+                ?: IptvEpg.parseLooseTime(obj.string("end"))
+                ?: IptvEpg.parseLooseTime(obj.string("stop"))
+                ?: startMs?.let { start ->
+                    obj.string("duration")?.toLongOrNull()?.let { start + it * 1000 }
+                }
+            val title = IptvEpg.decodeMaybeBase64(obj.string("title") ?: obj.string("name"))
+            val description = IptvEpg.decodeMaybeBase64(obj.string("description") ?: obj.string("desc"))
+                .ifBlank { null }
+            if (title.isBlank() || startMs == null || endMs == null || endMs <= startMs) return@mapNotNull null
+            if (endMs < windowStartMs || startMs > windowEndMs) return@mapNotNull null
+            IptvProgram(
+                channelId = id,
+                title = title,
+                description = description,
+                startMs = startMs,
+                endMs = endMs,
+            )
+        }.sortedBy { it.startMs }
+    }
+
     private suspend fun getJson(url: String): JsonElement {
         val response = httpRequestRaw(
             method = "GET",

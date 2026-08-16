@@ -15,7 +15,7 @@ class M3uPlaylistParserTest {
             https://example.com/espn.ts
         """.trimIndent()
 
-        val channels = M3uPlaylistParser.parse(playlist, sourceId = "src-1")
+        val channels = M3uPlaylistParser.parse(playlist, sourceId = "src-1").channels
 
         assertEquals(2, channels.size)
         assertEquals("BBC One HD", channels[0].name)
@@ -36,8 +36,20 @@ class M3uPlaylistParserTest {
             https://example.com/orphan.m3u8
         """.trimIndent()
 
-        val channels = M3uPlaylistParser.parse(playlist, sourceId = "src")
+        val channels = M3uPlaylistParser.parse(playlist, sourceId = "src").channels
         assertEquals(1, channels.size)
         assertTrue(channels[0].name.startsWith("Channel"))
+    }
+
+    @Test
+    fun readsUrlTvgFromHeader() {
+        val playlist = """
+            #EXTM3U url-tvg="https://example.com/guide.xml"
+            #EXTINF:-1 tvg-id="a",A
+            https://example.com/a.m3u8
+        """.trimIndent()
+        val result = M3uPlaylistParser.parse(playlist, sourceId = "src")
+        assertEquals("https://example.com/guide.xml", result.epgUrl)
+        assertEquals(1, result.channels.size)
     }
 }

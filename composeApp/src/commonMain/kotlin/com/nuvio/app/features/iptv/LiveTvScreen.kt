@@ -52,8 +52,10 @@ import com.nuvio.app.core.ui.NuvioScreen
 import com.nuvio.app.core.ui.NuvioScreenHeader
 import com.nuvio.app.core.ui.NuvioSurfaceCard
 import com.nuvio.app.core.ui.NuvioTokens
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.Res
 import nuvio.composeapp.generated.resources.compose_nav_live
@@ -66,6 +68,10 @@ import nuvio.composeapp.generated.resources.iptv_cancel
 import nuvio.composeapp.generated.resources.iptv_channel_count
 import nuvio.composeapp.generated.resources.iptv_empty_body
 import nuvio.composeapp.generated.resources.iptv_empty_title
+import nuvio.composeapp.generated.resources.iptv_epg_loading
+import nuvio.composeapp.generated.resources.iptv_epg_next
+import nuvio.composeapp.generated.resources.iptv_epg_none
+import nuvio.composeapp.generated.resources.iptv_epg_now
 import nuvio.composeapp.generated.resources.iptv_groups_all
 import nuvio.composeapp.generated.resources.iptv_kind_m3u
 import nuvio.composeapp.generated.resources.iptv_kind_stalker
@@ -86,6 +92,7 @@ import nuvio.composeapp.generated.resources.iptv_star_channels_done
 import nuvio.composeapp.generated.resources.iptv_starred_count
 import nuvio.composeapp.generated.resources.iptv_username_label
 import org.jetbrains.compose.resources.stringResource
+import com.nuvio.app.features.library.LibraryClock
 
 @Composable
 fun LiveTvScreen(
@@ -101,6 +108,13 @@ fun LiveTvScreen(
 
     LaunchedEffect(Unit) {
         IptvRepository.ensureLoaded()
+    }
+
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            IptvRepository.refreshEpgForStarred(force = true)
+            delay(IptvEpg.RefreshIntervalMs)
+        }
     }
 
     LaunchedEffect(scrollToTopRequests) {
@@ -249,6 +263,24 @@ fun LiveTvScreen(
             )
         }
 
+        if (state.epgIsLoading) {
+            item {
+                Text(
+                    text = stringResource(Res.string.iptv_epg_loading),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else if (!state.epgError.isNullOrBlank()) {
+            item {
+                Text(
+                    text = state.epgError.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+
         if (state.groups.isNotEmpty()) {
             item {
                 Row(
@@ -382,6 +414,7 @@ fun LiveTvScreen(
                 ) { channel ->
                     ChannelRow(
                         channel = channel,
+                        programmes = state.programmesFor(channel.id),
                         onClick = { onPlayChannel(channel) },
                     )
                 }
@@ -396,6 +429,7 @@ private fun StarChannelsDialog(
     onDismiss: () -> Unit,
 ) {
     val state by IptvRepository.state.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
     var query by rememberSaveable { mutableStateOf("") }
     var starredOnly by rememberSaveable { mutableStateOf(false) }
     val channels = remember(state.channels, state.starredChannelIds, sourceId, query, starredOnly) {
@@ -453,7 +487,10 @@ private fun StarChannelsDialog(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { IptvRepository.toggleStar(channel) }
+                                .clickable {
+                                    IptvRepository.toggleStar(channel)
+                                    scope.launch { IptvRepository.refreshEpgAfterStarChange() }
+                                }
                                 .padding(vertical = NuvioTokens.Space.s8),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s12),
@@ -500,8 +537,12 @@ private fun StarChannelsDialog(
 @Composable
 private fun ChannelRow(
     channel: IptvChannel,
+    programmes: List<IptvProgram>,
     onClick: () -> Unit,
 ) {
+    val nowMs = LibraryClock.nowEpochMs()
+    val current = IptvEpg.nowPlaying(programmes, nowMs)
+    val next = current?.let { IptvEpg.nextProgram(programmes, it) }
     NuvioSurfaceCard(
         modifier = Modifier.clickable(onClick = onClick),
     ) {
@@ -526,6 +567,37 @@ private fun ChannelRow(
                 channel.groupTitle?.takeIf { it.isNotBlank() }?.let { group ->
                     Text(
                         text = group,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (current != null) {
+                    Text(
+                        text = stringResource(
+                            Res.string.iptv_epg_now,
+                            "${IptvEpg.formatClock(current.startMs)}–${IptvEpg.formatClock(current.endMs)} ${current.title}",
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (next != null) {
+                        Text(
+                            text = stringResource(
+                                Res.string.iptv_epg_next,
+                                "${IptvEpg.formatClock(next.startMs)} ${next.title}",
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                } else {
+                    Text(
+                        text = stringResource(Res.string.iptv_epg_none),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,

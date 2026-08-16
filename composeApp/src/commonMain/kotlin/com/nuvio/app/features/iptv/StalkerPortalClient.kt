@@ -172,6 +172,72 @@ internal class StalkerPortalClient(
         }
     }
 
+    suspend fun fetchChannelEpg(
+        channelPortalId: String,
+        windowStartMs: Long,
+        windowEndMs: Long,
+    ): List<IptvProgram> {
+        ensureAuthenticated()
+        val chId = channelPortalId.trim()
+        if (chId.isEmpty()) return emptyList()
+        var rows = emptyList<JsonElement>()
+        runCatching {
+            val payload = apiGet(
+                type = "epg",
+                action = "get_simple_data_table",
+                extraQuery = "ch_id=${chId.encodeURLParameter()}",
+                includeTokenCookie = true,
+            )
+            rows = payload["data"]?.asArrayOrNull().orEmpty()
+        }
+        if (rows.isEmpty()) {
+            runCatching {
+                val payload = apiGet(
+                    type = "itv",
+                    action = "get_epg_info",
+                    extraQuery = "period=whole&ch_id=${chId.encodeURLParameter()}",
+                    includeTokenCookie = true,
+                )
+                val data = payload["data"]
+                rows = when (data) {
+                    is JsonArray -> data
+                    is JsonObject -> data[chId]?.asArrayOrNull().orEmpty()
+                        .ifEmpty { data["data"]?.asArrayOrNull().orEmpty() }
+                    else -> emptyList()
+                }
+            }
+        }
+        return rows.mapNotNull { element ->
+            val obj = element.asObjectOrNull() ?: return@mapNotNull null
+            val startMs = IptvEpg.parseLooseTime(obj["start_timestamp"])
+                ?: IptvEpg.parseLooseTime(obj.string("time"))
+                ?: IptvEpg.parseLooseTime(obj.string("start"))
+                ?: IptvEpg.parseLooseTime(obj.string("t_time"))
+            var endMs = IptvEpg.parseLooseTime(obj["stop_timestamp"])
+                ?: IptvEpg.parseLooseTime(obj.string("time_to"))
+                ?: IptvEpg.parseLooseTime(obj.string("stop"))
+                ?: IptvEpg.parseLooseTime(obj.string("end"))
+            if (endMs == null && startMs != null) {
+                endMs = obj.string("duration")?.toLongOrNull()?.let { startMs + it * 1000 }
+            }
+            val title = IptvEpg.decodeMaybeBase64(
+                obj.string("name") ?: obj.string("title") ?: obj.string("progname"),
+            )
+            val description = IptvEpg.decodeMaybeBase64(
+                obj.string("descr") ?: obj.string("description") ?: obj.string("desc"),
+            ).ifBlank { null }
+            if (title.isBlank() || startMs == null || endMs == null || endMs <= startMs) return@mapNotNull null
+            if (endMs < windowStartMs || startMs > windowEndMs) return@mapNotNull null
+            IptvProgram(
+                channelId = chId,
+                title = title,
+                description = description,
+                startMs = startMs,
+                endMs = endMs,
+            )
+        }.sortedBy { it.startMs }
+    }
+
     private suspend fun apiGet(
         type: String,
         action: String,

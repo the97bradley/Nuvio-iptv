@@ -56,6 +56,8 @@ No built-in channel packs. Users add their own playlists.
 
 **Starred channels:** Adding a playlist does **not** put every channel in Live. Star channels first; Live shows starred only. New playlists start with zero stars.
 
+**EPG / now playing:** For starred channels, Nuvio auto-refreshes programme guide data for **now + the next week** (XMLTV for M3U `url-tvg`/`epgUrl`, Xtream `get_simple_data_table`, Stalker EPG APIs). Live rows show now/next; search matches **channel name or programme title**.
+
 - **Web:** Settings → IPTV → open playlist → star/unstar
 - **Android:** Live header star button (also opens after adding a playlist)
 

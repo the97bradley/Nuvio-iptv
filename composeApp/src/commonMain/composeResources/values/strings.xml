@@ -416,7 +416,11 @@
     <string name="iptv_playlist_url_label">M3U URL</string>
     <string name="iptv_portal_url_label">Portal URL</string>
     <string name="iptv_remove_playlist">Remove source</string>
-    <string name="iptv_search_channels">Search channels</string>
+    <string name="iptv_search_channels">Search channels or programmes</string>
+    <string name="iptv_epg_none">No guide data</string>
+    <string name="iptv_epg_loading">Refreshing programme guide…</string>
+    <string name="iptv_epg_now">Now · %1$s</string>
+    <string name="iptv_epg_next">Next · %1$s</string>
     <string name="iptv_server_url_label">Server URL</string>
     <string name="iptv_username_label">Username</string>
     <string name="compose_player_audio_tracks">Audio Tracks</string>

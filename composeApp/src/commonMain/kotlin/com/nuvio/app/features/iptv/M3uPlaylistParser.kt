@@ -2,12 +2,19 @@ package com.nuvio.app.features.iptv
 
 /**
  * Minimal M3U / M3U8 playlist parser for IPTV live channels.
- * Supports `#EXTINF` attributes (`tvg-id`, `tvg-name`, `tvg-logo`, `group-title`).
+ * Supports `#EXTINF` attributes (`tvg-id`, `tvg-name`, `tvg-logo`, `group-title`)
+ * and `#EXTM3U url-tvg` / `x-tvg-url` for XMLTV guides.
  */
 object M3uPlaylistParser {
     private val attributeRegex = Regex("""([\w-]+)="([^"]*)"""")
 
-    fun parse(content: String, sourceId: String): List<IptvChannel> {
+    data class Result(
+        val channels: List<IptvChannel>,
+        val epgUrl: String? = null,
+    )
+
+    fun parse(content: String, sourceId: String): Result {
+        val epgUrl = XmltvParser.extractM3uEpgUrl(content)
         val lines = content.lineSequence()
             .map { it.trim() }
             .filter { it.isNotEmpty() }
@@ -60,6 +67,6 @@ object M3uPlaylistParser {
                 }
             }
         }
-        return channels
+        return Result(channels = channels, epgUrl = epgUrl)
     }
 }

@@ -43,6 +43,14 @@ data class IptvChannelGroup(
     val channels: List<IptvChannel>,
 )
 
+data class IptvProgram(
+    val channelId: String,
+    val title: String,
+    val description: String? = null,
+    val startMs: Long,
+    val endMs: Long,
+)
+
 data class IptvUiState(
     val sources: List<IptvPlaylistSource> = emptyList(),
     val channels: List<IptvChannel> = emptyList(),
@@ -55,6 +63,10 @@ data class IptvUiState(
     val isLoaded: Boolean = false,
     /** Per-source starred channel ids. Live only shows starred channels. */
     val starredChannelIds: Map<String, List<String>> = emptyMap(),
+    val epgByChannelId: Map<String, List<IptvProgram>> = emptyMap(),
+    val epgIsLoading: Boolean = false,
+    val epgLastRefreshedAt: Long? = null,
+    val epgError: String? = null,
 ) {
     fun starredIdsFor(sourceId: String?): List<String> {
         if (sourceId.isNullOrBlank()) return emptyList()
@@ -66,6 +78,8 @@ data class IptvUiState(
     }
 
     fun starredCount(sourceId: String?): Int = starredIdsFor(sourceId).size
+
+    fun programmesFor(channelId: String): List<IptvProgram> = epgByChannelId[channelId].orEmpty()
 
     val filteredChannels: List<IptvChannel>
         get() {
@@ -79,7 +93,8 @@ data class IptvUiState(
             if (trimmed.isEmpty()) return byGroup
             return byGroup.filter { channel ->
                 channel.name.contains(trimmed, ignoreCase = true) ||
-                    (channel.groupTitle?.contains(trimmed, ignoreCase = true) == true)
+                    (channel.groupTitle?.contains(trimmed, ignoreCase = true) == true) ||
+                    IptvEpg.matchesQuery(programmesFor(channel.id), trimmed)
             }
         }
 

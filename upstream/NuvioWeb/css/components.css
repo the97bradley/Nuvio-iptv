@@ -22093,6 +22093,37 @@ html[data-card-depth="true"][data-card-depth-trailers="true"] .detail-trailer-ca
   white-space: nowrap;
 }
 
+.live-row-epg {
+  color: var(--color-text-primary, #eee);
+  font-size: 0.86em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-row-epg-empty {
+  color: var(--color-text-secondary, #888);
+  opacity: 0.8;
+}
+
+.live-row-epg-next {
+  color: var(--color-text-secondary, #aaa);
+  font-size: 0.8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-epg-status {
+  margin-top: 0.35rem;
+  color: var(--color-text-secondary, #aaa);
+  font-size: 0.85rem;
+}
+
+.live-epg-status-error {
+  color: #ffb4b4;
+}
+
 .live-row-play {
   opacity: 0.55;
   font-size: 1.25rem;

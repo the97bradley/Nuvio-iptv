@@ -1,3 +1,9 @@
+import {
+  decodeMaybeBase64,
+  normalizeProgram,
+  parseLooseTime
+} from "./iptvEpg.js";
+
 const MAG_USER_AGENT =
   "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 4 rev: 2721 Mobile Safari/533.3";
 
@@ -191,6 +197,83 @@ export class StalkerPortalClient {
         return { id, name };
       })
       .filter(Boolean);
+  }
+
+  /**
+   * Fetch EPG rows for a Stalker channel id (portal ch_id).
+   * Tries epg.get_simple_data_table then itv.get_epg_info.
+   */
+  async fetchChannelEpg(channelPortalId, { windowStartMs, windowEndMs } = {}) {
+    await this.ensureAuthenticated();
+    const chId = String(channelPortalId || "").trim();
+    if (!chId) return [];
+    let rows = [];
+    try {
+      const payload = await this.apiGet(
+        "epg",
+        "get_simple_data_table",
+        `ch_id=${encodeURIComponent(chId)}`,
+        true
+      );
+      rows = asArray(payload?.data);
+    } catch (_) {
+      rows = [];
+    }
+    if (!rows.length) {
+      try {
+        const payload = await this.apiGet(
+          "itv",
+          "get_epg_info",
+          `period=whole&ch_id=${encodeURIComponent(chId)}`,
+          true
+        );
+        const data = payload?.data;
+        if (Array.isArray(data)) rows = data;
+        else if (data && typeof data === "object") {
+          rows = asArray(data[chId] || data.data);
+        }
+      } catch (_) {
+        rows = [];
+      }
+    }
+
+    const out = [];
+    for (const item of rows) {
+      const obj = asObject(item);
+      if (!obj) continue;
+      const startMs =
+        parseLooseTime(obj.start_timestamp) ||
+        parseLooseTime(obj.time) ||
+        parseLooseTime(obj.start) ||
+        parseLooseTime(obj.t_time);
+      let endMs =
+        parseLooseTime(obj.stop_timestamp) ||
+        parseLooseTime(obj.time_to) ||
+        parseLooseTime(obj.stop) ||
+        parseLooseTime(obj.end);
+      if (!Number.isFinite(endMs) && Number.isFinite(startMs) && Number(obj.duration)) {
+        endMs = startMs + Number(obj.duration) * 1000;
+      }
+      const title = decodeMaybeBase64(
+        stringField(obj, "name") || stringField(obj, "title") || stringField(obj, "progname") || ""
+      );
+      const description = decodeMaybeBase64(
+        stringField(obj, "descr") || stringField(obj, "description") || stringField(obj, "desc") || ""
+      );
+      const program = normalizeProgram({
+        channelId: chId,
+        title,
+        description: description || null,
+        startMs,
+        endMs
+      });
+      if (!program) continue;
+      if (Number.isFinite(windowStartMs) && program.endMs < windowStartMs) continue;
+      if (Number.isFinite(windowEndMs) && program.startMs > windowEndMs) continue;
+      out.push(program);
+    }
+    out.sort((a, b) => a.startMs - b.startMs);
+    return out;
   }
 
   async apiGet(type, action, extraQuery = "", includeTokenCookie = true, requireAuth = true) {

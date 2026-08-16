@@ -1,12 +1,17 @@
 /**
  * Minimal M3U / M3U8 playlist parser for IPTV live channels.
- * Supports #EXTINF attributes (tvg-id, tvg-name, tvg-logo, group-title).
+ * Supports #EXTINF attributes (tvg-id, tvg-name, tvg-logo, group-title)
+ * and #EXTM3U url-tvg / x-tvg-url for XMLTV guides.
  */
+
+import { extractM3uEpgUrl } from "./xmltvParser.js";
 
 const ATTRIBUTE_REGEX = /([\w-]+)="([^"]*)"/g;
 
 export function parseM3uPlaylist(content, sourceId) {
-  const lines = String(content || "")
+  const text = String(content || "");
+  const epgUrl = extractM3uEpgUrl(text);
+  const lines = text
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
@@ -62,5 +67,5 @@ export function parseM3uPlaylist(content, sourceId) {
     pendingTvgName = null;
   }
 
-  return channels;
+  return { channels, epgUrl };
 }

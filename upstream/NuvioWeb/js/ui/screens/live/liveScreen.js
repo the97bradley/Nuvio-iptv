@@ -9,6 +9,7 @@ import {
   renderRootSidebar
 } from "../../components/sidebarNavigation.js";
 import { IptvRepository } from "../../../features/iptv/iptvRepository.js";
+import { formatEpgClock, formatNowNext } from "../../../features/iptv/iptvEpg.js";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -21,6 +22,24 @@ function escapeHtml(value) {
 
 function t(key, params = {}, fallback = key) {
   return I18n.t(key, params, { fallback });
+}
+
+function renderNowPlayingLine(channel) {
+  const programmes = IptvRepository.programmesFor(channel.id);
+  const pair = formatNowNext(programmes);
+  if (!pair?.current) {
+    return `<span class="live-row-epg live-row-epg-empty">${escapeHtml(
+      t("live_epg_none", {}, "No guide data")
+    )}</span>`;
+  }
+  const nowLabel = `${formatEpgClock(pair.current.startMs)}–${formatEpgClock(pair.current.endMs)} · ${pair.current.title}`;
+  const nextLabel = pair.next
+    ? `Next: ${formatEpgClock(pair.next.startMs)} · ${pair.next.title}`
+    : "";
+  return `
+    <span class="live-row-epg">${escapeHtml(nowLabel)}</span>
+    ${nextLabel ? `<span class="live-row-epg-next">${escapeHtml(nextLabel)}</span>` : ""}
+  `;
 }
 
 export const LiveScreen = {
@@ -38,6 +57,7 @@ export const LiveScreen = {
     this.container.addEventListener("input", this.boundInput);
     this.unsubscribe = IptvRepository.subscribe(() => this.render());
     await IptvRepository.ensureLoaded();
+    IptvRepository.startEpgAutoRefresh();
     this.render();
   },
 
@@ -65,7 +85,7 @@ export const LiveScreen = {
                 t(
                   "live_subtitle",
                   {},
-                  "Only starred channels from Settings → IPTV."
+                  "Starred channels with now-playing guide (auto-refreshes for the next week)."
                 )
               )}</p>
             </div>
@@ -128,7 +148,13 @@ export const LiveScreen = {
                              data-action="search"
                              data-row="2"
                              data-col="0"
-                             placeholder="${escapeHtml(t("live_search_channels", {}, "Search channels"))}"
+                             placeholder="${escapeHtml(
+                               t(
+                                 "live_search_channels_programs",
+                                 {},
+                                 "Search channels or programmes"
+                               )
+                             )}"
                              value="${escapeHtml(state.query)}" />
                     </label>
                     <div class="live-groups">
@@ -157,6 +183,17 @@ export const LiveScreen = {
                         .join("")}
                     </div>
                   </div>
+                  ${
+                    state.epgIsLoading
+                      ? `<div class="live-epg-status">${escapeHtml(
+                          t("live_epg_loading", {}, "Refreshing programme guide…")
+                        )}</div>`
+                      : state.epgError
+                        ? `<div class="live-epg-status live-epg-status-error">${escapeHtml(
+                            state.epgError
+                          )}</div>`
+                        : ""
+                  }
                 </section>
 
                 ${
@@ -200,7 +237,11 @@ export const LiveScreen = {
                           }
                           return `<section class="live-empty live-empty-soft">
                             <p>${escapeHtml(
-                              t("live_no_channels", {}, "No channels match this filter.")
+                              t(
+                                "live_no_channels",
+                                {},
+                                "No channels or programmes match this search."
+                              )
                             )}</p>
                           </section>`;
                         })()
@@ -236,6 +277,7 @@ export const LiveScreen = {
                                        <span class="live-row-group">${escapeHtml(
                                          channel.groupTitle || IptvRepository.UNGROUPED
                                        )}</span>
+                                       ${renderNowPlayingLine(channel)}
                                      </span>
                                      <span class="material-icons live-row-play" aria-hidden="true">play_arrow</span>
                                    </button>
@@ -325,6 +367,7 @@ export const LiveScreen = {
   },
 
   cleanup() {
+    IptvRepository.stopEpgAutoRefresh();
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = null;

@@ -1,3 +1,9 @@
+import {
+  decodeMaybeBase64,
+  normalizeProgram,
+  parseLooseTime
+} from "./iptvEpg.js";
+
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
@@ -124,6 +130,68 @@ export class XtreamCodesClient {
 
   buildLiveStreamUrl(streamId) {
     return `${this.serverBase}/live/${encodeURIComponent(this.user)}/${encodeURIComponent(this.pass)}/${streamId}.${this.preferredExtension}`;
+  }
+
+  /**
+   * Week-ish EPG for one live stream via get_simple_data_table (fallback: get_short_epg).
+   * @returns {Promise<{ title: string, description: string|null, startMs: number, endMs: number }[]>}
+   */
+  async fetchStreamEpg(streamId, { windowStartMs, windowEndMs } = {}) {
+    const id = String(streamId || "").trim();
+    if (!id) return [];
+    await this.authenticate();
+    let listings = [];
+    try {
+      const payload = await this.getJson(
+        `${this.playerApi}?username=${encodeURIComponent(this.user)}&password=${encodeURIComponent(this.pass)}&action=get_simple_data_table&stream_id=${encodeURIComponent(id)}`
+      );
+      listings = asArray(asObject(payload)?.epg_listings);
+    } catch (_) {
+      listings = [];
+    }
+    if (!listings.length) {
+      try {
+        const payload = await this.getJson(
+          `${this.playerApi}?username=${encodeURIComponent(this.user)}&password=${encodeURIComponent(this.pass)}&action=get_short_epg&stream_id=${encodeURIComponent(id)}&limit=50`
+        );
+        listings = asArray(asObject(payload)?.epg_listings);
+      } catch (_) {
+        listings = [];
+      }
+    }
+    const out = [];
+    for (const item of listings) {
+      const obj = asObject(item);
+      if (!obj) continue;
+      const startMs =
+        parseLooseTime(obj.start_timestamp) ||
+        parseLooseTime(obj.start) ||
+        parseLooseTime(obj.time);
+      const endMs =
+        parseLooseTime(obj.stop_timestamp) ||
+        parseLooseTime(obj.end) ||
+        parseLooseTime(obj.stop) ||
+        (Number.isFinite(startMs) && Number(obj.duration)
+          ? startMs + Number(obj.duration) * 1000
+          : null);
+      const title = decodeMaybeBase64(stringField(obj, "title") || stringField(obj, "name") || "");
+      const description = decodeMaybeBase64(
+        stringField(obj, "description") || stringField(obj, "desc") || ""
+      );
+      const program = normalizeProgram({
+        channelId: id,
+        title,
+        description: description || null,
+        startMs,
+        endMs
+      });
+      if (!program) continue;
+      if (Number.isFinite(windowStartMs) && program.endMs < windowStartMs) continue;
+      if (Number.isFinite(windowEndMs) && program.startMs > windowEndMs) continue;
+      out.push(program);
+    }
+    out.sort((a, b) => a.startMs - b.startMs);
+    return out;
   }
 
   async getJson(url) {

@@ -26,8 +26,12 @@ object IptvRepository {
     private val stalkerClients = mutableMapOf<String, StalkerPortalClient>()
 
     suspend fun ensureLoaded() {
-        if (_state.value.isLoaded) return
+        if (_state.value.isLoaded) {
+            refreshEpgForStarred(force = false)
+            return
+        }
         refreshFromStorage()
+        refreshEpgForStarred(force = true)
     }
 
     suspend fun refreshFromStorage() = mutex.withLock {
@@ -89,12 +93,21 @@ object IptvRepository {
         val nextStarred = _state.value.starredChannelIds.toMutableMap()
         if (current.isEmpty()) nextStarred.remove(sourceId)
         else nextStarred[sourceId] = current.toList()
-        _state.update { it.copy(starredChannelIds = nextStarred) }
+        var nextEpg = _state.value.epgByChannelId
+        if (!nowStarred && nextEpg.containsKey(channel.id)) {
+            nextEpg = nextEpg - channel.id
+        }
+        _state.update { it.copy(starredChannelIds = nextStarred, epgByChannelId = nextEpg) }
         persist()
         val selectedId = _state.value.selectedSourceId
         val cached = selectedId?.let { channelCache[it] }
         if (cached != null) publishChannels(cached)
         return nowStarred
+    }
+
+    /** Call after starring (or from Live) to pull now+week guide for starred channels. */
+    suspend fun refreshEpgAfterStarChange() {
+        refreshEpgForStarred(force = true)
     }
 
     suspend fun selectSource(sourceId: String) {
@@ -203,7 +216,9 @@ object IptvRepository {
     suspend fun refreshSelectedSource(): Boolean {
         val sourceId = _state.value.selectedSourceId ?: return false
         stalkerClients.remove(sourceId)
-        return loadChannelsForSource(sourceId, forceNetwork = true)
+        val ok = loadChannelsForSource(sourceId, forceNetwork = true)
+        refreshEpgForStarred(force = true)
+        return ok
     }
 
     suspend fun resolvePlayerLaunch(channel: IptvChannel): PlayerLaunch {
@@ -276,8 +291,13 @@ object IptvRepository {
 
         _state.update { it.copy(isLoading = true, errorMessage = null) }
         return try {
+            var detectedEpgUrl = source.epgUrl
             val channels = when (source.kind) {
-                IptvSourceKind.M3U -> fetchM3uChannels(source)
+                IptvSourceKind.M3U -> {
+                    val parsed = fetchM3uChannels(source)
+                    if (!parsed.epgUrl.isNullOrBlank()) detectedEpgUrl = parsed.epgUrl
+                    parsed.channels
+                }
                 IptvSourceKind.Stalker -> clientFor(source).loadChannels(source.id)
                 IptvSourceKind.Xtream -> XtreamCodesClient(
                     serverUrl = source.url,
@@ -286,7 +306,10 @@ object IptvRepository {
                 ).loadChannels(source.id)
             }
             channelCache = channelCache + (sourceId to channels)
-            val refreshed = source.copy(lastRefreshedAtEpochMs = currentTimeMillis())
+            val refreshed = source.copy(
+                epgUrl = detectedEpgUrl,
+                lastRefreshedAtEpochMs = currentTimeMillis(),
+            )
             mutex.withLock {
                 val sources = _state.value.sources.map { if (it.id == sourceId) refreshed else it }
                 val validIds = channels.map { it.id }.toSet()
@@ -326,7 +349,7 @@ object IptvRepository {
         }
     }
 
-    private suspend fun fetchM3uChannels(source: IptvPlaylistSource): List<IptvChannel> {
+    private suspend fun fetchM3uChannels(source: IptvPlaylistSource): M3uPlaylistParser.Result {
         val response = httpRequestRaw(
             method = "GET",
             url = source.url,
@@ -363,6 +386,124 @@ object IptvRepository {
                     groups.any { group -> group.title == title }
                 },
             )
+        }
+    }
+
+    suspend fun refreshEpgForStarred(force: Boolean = false) {
+        val starredEntries = ArrayList<Pair<IptvPlaylistSource, IptvChannel>>()
+        for (source in _state.value.sources) {
+            val ids = _state.value.starredIdsFor(source.id)
+            if (ids.isEmpty()) continue
+            var channels = channelCache[source.id]
+            if (channels == null) {
+                loadChannelsForSource(source.id, forceNetwork = false)
+                channels = channelCache[source.id].orEmpty()
+            }
+            for (channel in channels) {
+                if (channel.id in ids) starredEntries += source to channel
+            }
+        }
+        if (starredEntries.isEmpty()) {
+            if (_state.value.epgByChannelId.isNotEmpty()) {
+                _state.update { it.copy(epgByChannelId = emptyMap(), epgIsLoading = false, epgError = null) }
+            }
+            return
+        }
+        val last = _state.value.epgLastRefreshedAt
+        if (!force && last != null && currentTimeMillis() - last < 60_000 && _state.value.epgByChannelId.isNotEmpty()) {
+            return
+        }
+        _state.update { it.copy(epgIsLoading = true, epgError = null) }
+        val windowStartMs = currentTimeMillis() - 60 * 60 * 1000L
+        val windowEndMs = currentTimeMillis() + IptvEpg.WindowMs
+        val nextEpg = _state.value.epgByChannelId.toMutableMap()
+        val keep = starredEntries.map { it.second.id }.toSet()
+        nextEpg.keys.filter { it !in keep }.forEach { nextEpg.remove(it) }
+        val errors = mutableListOf<String>()
+        val bySource = starredEntries.groupBy { it.first.id }
+        for ((_, entries) in bySource) {
+            val source = entries.first().first
+            val channels = entries.map { it.second }
+            try {
+                when (source.kind) {
+                    IptvSourceKind.M3U -> refreshM3uEpg(source, channels, nextEpg, windowStartMs, windowEndMs)
+                    IptvSourceKind.Xtream -> {
+                        val client = XtreamCodesClient(
+                            serverUrl = source.url,
+                            username = source.username.orEmpty(),
+                            password = source.password.orEmpty(),
+                        )
+                        for (channel in channels) {
+                            val streamId = channel.id.substringAfterLast(':')
+                            runCatching {
+                                client.fetchStreamEpg(streamId, windowStartMs, windowEndMs)
+                                    .map { it.copy(channelId = channel.id) }
+                            }.onSuccess { nextEpg[channel.id] = it }
+                                .onFailure { errors += it.message.orEmpty() }
+                        }
+                    }
+                    IptvSourceKind.Stalker -> {
+                        val client = clientFor(source)
+                        for (channel in channels) {
+                            val portalId = channel.id.substringAfterLast(':')
+                            runCatching {
+                                client.fetchChannelEpg(portalId, windowStartMs, windowEndMs)
+                                    .map { it.copy(channelId = channel.id) }
+                            }.onSuccess { nextEpg[channel.id] = it }
+                                .onFailure { errors += it.message.orEmpty() }
+                        }
+                    }
+                }
+            } catch (error: Throwable) {
+                errors += error.message.orEmpty()
+            }
+        }
+        _state.update {
+            it.copy(
+                epgByChannelId = nextEpg,
+                epgIsLoading = false,
+                epgLastRefreshedAt = currentTimeMillis(),
+                epgError = errors.firstOrNull { msg -> msg.isNotBlank() },
+            )
+        }
+    }
+
+    private suspend fun refreshM3uEpg(
+        source: IptvPlaylistSource,
+        channels: List<IptvChannel>,
+        nextEpg: MutableMap<String, List<IptvProgram>>,
+        windowStartMs: Long,
+        windowEndMs: Long,
+    ) {
+        val epgUrl = source.epgUrl?.trim().orEmpty()
+        if (epgUrl.isEmpty()) {
+            channels.forEach { nextEpg.putIfAbsent(it.id, emptyList()) }
+            return
+        }
+        val response = httpRequestRaw(
+            method = "GET",
+            url = epgUrl,
+            headers = emptyMap(),
+            body = "",
+            followRedirects = true,
+            maxResponseBodyBytes = IptvEpg.MaxXmlBytes,
+        )
+        if (response.status !in 200..299) {
+            error("EPG request failed (${response.status})")
+        }
+        val tvgIds = channels.mapNotNull { it.tvgId ?: it.id }.toSet()
+        val programmes = withContext(Dispatchers.Default) {
+            XmltvParser.parseProgrammes(
+                xml = response.body,
+                channelIds = tvgIds,
+                windowStartMs = windowStartMs,
+                windowEndMs = windowEndMs,
+            )
+        }
+        val byTvg = programmes.groupBy { it.channelId }
+        for (channel in channels) {
+            val key = channel.tvgId ?: channel.id
+            nextEpg[channel.id] = byTvg[key].orEmpty().map { it.copy(channelId = channel.id) }
         }
     }
 
