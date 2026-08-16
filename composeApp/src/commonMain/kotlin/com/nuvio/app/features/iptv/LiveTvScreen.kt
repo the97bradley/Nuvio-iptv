@@ -161,7 +161,6 @@ fun LiveTvScreen(
                     horizontalArrangement = Arrangement.spacedBy(NuvioTokens.Space.s8),
                 ) {
                     state.sources.forEach { source ->
-                        val builtin = BuiltinUsaChannels.isBuiltin(source)
                         FilterChip(
                             selected = source.id == state.selectedSourceId,
                             onClick = {
@@ -169,29 +168,21 @@ fun LiveTvScreen(
                             },
                             label = {
                                 Text(
-                                    text = if (builtin) {
-                                        source.name
-                                    } else {
-                                        "${source.name} (${source.kind.name})"
-                                    },
+                                    text = "${source.name} (${source.kind.name})",
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
                             },
-                            trailingIcon = if (builtin) {
-                                null
-                            } else {
-                                {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Delete,
-                                        contentDescription = stringResource(Res.string.iptv_remove_playlist),
-                                        modifier = Modifier
-                                            .size(16.dp)
-                                            .clickable {
-                                                scope.launch { IptvRepository.removeSource(source.id) }
-                                            },
-                                    )
-                                }
+                            trailingIcon = {
+                                Icon(
+                                    imageVector = Icons.Rounded.Delete,
+                                    contentDescription = stringResource(Res.string.iptv_remove_playlist),
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .clickable {
+                                            scope.launch { IptvRepository.removeSource(source.id) }
+                                        },
+                                )
                             },
                         )
                     }

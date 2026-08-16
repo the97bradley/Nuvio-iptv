@@ -1,14 +1,15 @@
 import { LocalStore } from "../../core/storage/localStore.js";
-import { BuiltinUsaChannels } from "./builtinUsaChannels.js";
 
 const STORAGE_KEY = "iptvLiveSources";
 const VALID_KINDS = new Set(["M3U", "Xtream", "Stalker"]);
+const REMOVED_BUILTIN_ID = "builtin-usa-public";
 
 function normalizeSource(raw = {}) {
   const id = String(raw?.id || "").trim();
   const url = String(raw?.url || "").trim();
   const kind = VALID_KINDS.has(String(raw?.kind || "")) ? String(raw.kind) : "M3U";
   if (!id || !url) return null;
+  if (id === REMOVED_BUILTIN_ID) return null;
   return {
     id,
     name: String(raw?.name || "").trim() || "Playlist",
@@ -27,16 +28,19 @@ function normalizePayload(raw = {}) {
   const sources = Array.isArray(raw?.sources)
     ? raw.sources.map(normalizeSource).filter(Boolean)
     : [];
+  const selectedSourceId =
+    raw?.selectedSourceId == null ? null : String(raw.selectedSourceId);
   return {
-    sources: BuiltinUsaChannels.mergeInto(sources),
-    selectedSourceId: raw?.selectedSourceId == null ? null : String(raw.selectedSourceId)
+    sources,
+    selectedSourceId: sources.some((source) => source.id === selectedSourceId)
+      ? selectedSourceId
+      : sources[0]?.id || null
   };
 }
 
 export const IptvStore = {
   load() {
-    const payload = normalizePayload(LocalStore.get(STORAGE_KEY, { sources: [], selectedSourceId: null }));
-    return payload;
+    return normalizePayload(LocalStore.get(STORAGE_KEY, { sources: [], selectedSourceId: null }));
   },
 
   save(sources, selectedSourceId) {

@@ -3,13 +3,11 @@ import { ScreenUtils } from "../../navigation/screen.js";
 import { Platform } from "../../../platform/index.js";
 import { I18n } from "../../../i18n/index.js";
 import { LayoutPreferences } from "../../../data/local/layoutPreferences.js";
-import { NuvioDialog } from "../../components/nuvioDialog.js";
 import { renderLoadingIndicator } from "../../components/loadingIndicator.js";
 import {
   bindRootSidebarEvents,
   renderRootSidebar
 } from "../../components/sidebarNavigation.js";
-import { BuiltinUsaChannels } from "../../../features/iptv/builtinUsaChannels.js";
 import { IptvRepository } from "../../../features/iptv/iptvRepository.js";
 
 function escapeHtml(value) {
@@ -25,16 +23,9 @@ function t(key, params = {}, fallback = key) {
   return I18n.t(key, params, { fallback });
 }
 
-function sourceLabel(source) {
-  if (BuiltinUsaChannels.isBuiltin(source)) return source.name;
-  return `${source.name} (${source.kind})`;
-}
-
 export const LiveScreen = {
   container: null,
   unsubscribe: null,
-  addDialog: null,
-  addKind: "M3U",
   boundClick: null,
   boundInput: null,
 
@@ -55,167 +46,183 @@ export const LiveScreen = {
     const state = IptvRepository.getState();
     const layout = LayoutPreferences.get?.() || {};
     const channels = IptvRepository.filteredChannels(state);
-    const sidebar = renderRootSidebar({
-      selectedRoute: "live",
-      layout
-    });
+    const sidebar = renderRootSidebar({ selectedRoute: "live", layout });
     const active = document.activeElement;
     const restoreSearch =
       active?.getAttribute?.("data-action") === "search" && this.container.contains(active);
     const selectionStart = restoreSearch ? active.selectionStart : null;
     const selectionEnd = restoreSearch ? active.selectionEnd : null;
+    const hasSources = state.sources.length > 0;
 
     this.container.innerHTML = `
-      <div class="home-shell library-shell live-shell">
+      <div class="home-shell live-shell">
         ${sidebar}
-        <main class="library-main live-main">
+        <main class="live-main">
           <header class="live-header">
-            <div>
-              <h1 class="settings-title">${escapeHtml(t("live_title", {}, "Live"))}</h1>
-              <p class="settings-subtitle">${escapeHtml(
+            <div class="live-header-copy">
+              <h1 class="live-title">${escapeHtml(t("live_title", {}, "Live"))}</h1>
+              <p class="live-subtitle">${escapeHtml(
                 t(
                   "live_subtitle",
                   {},
-                  "USA Public channels are built in. Add M3U, Stalker, or Xtream sources anytime."
+                  "Watch channels from playlists you add in Settings → IPTV."
                 )
               )}</p>
             </div>
             <div class="live-header-actions">
-              <button class="library-action-button focusable" data-action="refresh" data-row="0" data-col="0">
-                ${escapeHtml(t("live_refresh", {}, "Refresh"))}
-              </button>
-              <button class="library-action-button library-primary focusable" data-action="add" data-row="0" data-col="1">
-                ${escapeHtml(t("live_add_source", {}, "Add source"))}
+              ${
+                hasSources
+                  ? `<button class="live-btn focusable" data-action="refresh" data-row="0" data-col="0">
+                       ${escapeHtml(t("live_refresh", {}, "Refresh"))}
+                     </button>`
+                  : ""
+              }
+              <button class="live-btn live-btn-primary focusable" data-action="open-settings" data-row="0" data-col="1">
+                ${escapeHtml(t("live_manage_playlists", {}, "Manage playlists"))}
               </button>
             </div>
           </header>
 
-          <section class="live-source-row" aria-label="Sources">
-            ${state.sources
-              .map((source, index) => {
-                const selected = source.id === state.selectedSourceId;
-                const builtin = BuiltinUsaChannels.isBuiltin(source);
-                return `
-                  <div class="live-source-chip${selected ? " selected" : ""}">
-                    <button class="live-source-button focusable${selected ? " selected" : ""}"
-                            data-action="select-source"
-                            data-source-id="${escapeHtml(source.id)}"
-                            data-row="1"
-                            data-col="${index}">
-                      ${escapeHtml(sourceLabel(source))}
-                    </button>
-                    ${
-                      builtin
-                        ? ""
-                        : `<button class="live-source-remove focusable"
-                                  data-action="remove-source"
+          ${
+            !hasSources
+              ? `<section class="live-empty">
+                   <h2>${escapeHtml(t("live_empty_title", {}, "No playlists yet"))}</h2>
+                   <p>${escapeHtml(
+                     t(
+                       "live_empty_body",
+                       {},
+                       "Add an M3U URL, Stalker portal, or Xtream Codes login in Settings → IPTV."
+                     )
+                   )}</p>
+                   <button class="live-btn live-btn-primary focusable" data-action="open-settings" data-row="1" data-col="0">
+                     ${escapeHtml(t("live_open_iptv_settings", {}, "Open IPTV settings"))}
+                   </button>
+                 </section>`
+              : `
+                <section class="live-controls">
+                  <div class="live-source-tabs" role="tablist">
+                    ${state.sources
+                      .map((source, index) => {
+                        const selected = source.id === state.selectedSourceId;
+                        return `
+                          <button class="live-tab focusable${selected ? " selected" : ""}"
+                                  role="tab"
+                                  aria-selected="${selected ? "true" : "false"}"
+                                  data-action="select-source"
                                   data-source-id="${escapeHtml(source.id)}"
                                   data-row="1"
-                                  data-col="${index}"
-                                  aria-label="${escapeHtml(t("live_remove_source", {}, "Remove source"))}">×</button>`
-                    }
+                                  data-col="${index}">
+                            <span class="live-tab-name">${escapeHtml(source.name)}</span>
+                            <span class="live-tab-kind">${escapeHtml(source.kind)}</span>
+                          </button>
+                        `;
+                      })
+                      .join("")}
                   </div>
-                `;
-              })
-              .join("")}
-          </section>
 
-          <section class="live-toolbar">
-            <label class="library-cloud-search-shell live-search-shell">
-              <span class="material-icons" aria-hidden="true">search</span>
-              <input class="library-cloud-search-input focusable"
-                     type="search"
-                     data-action="search"
-                     data-row="2"
-                     data-col="0"
-                     placeholder="${escapeHtml(t("live_search_channels", {}, "Search channels"))}"
-                     value="${escapeHtml(state.query)}" />
-            </label>
-            <div class="live-group-row">
-              <button class="live-group-chip focusable${!state.selectedGroupTitle ? " selected" : ""}"
-                      data-action="select-group"
-                      data-group=""
-                      data-row="3"
-                      data-col="0">
-                ${escapeHtml(t("live_groups_all", {}, "All groups"))}
-              </button>
-              ${state.groups
-                .map(
-                  (group, index) => `
-                    <button class="live-group-chip focusable${
-                      state.selectedGroupTitle === group.title ? " selected" : ""
-                    }"
-                            data-action="select-group"
-                            data-group="${escapeHtml(group.title)}"
-                            data-row="3"
-                            data-col="${index + 1}">
-                      ${escapeHtml(group.title)} (${group.channels.length})
-                    </button>
-                  `
-                )
-                .join("")}
-            </div>
-          </section>
-
-          ${
-            state.errorMessage
-              ? `<div class="live-error">${escapeHtml(state.errorMessage)}</div>`
-              : ""
-          }
-
-          ${
-            state.isLoading
-              ? `<section class="library-empty-state">${renderLoadingIndicator({
-                  size: "medium"
-                })}<p class="library-empty-subtitle">${escapeHtml(
-                  t("live_loading", {}, "Loading channels")
-                )}</p></section>`
-              : channels.length === 0
-                ? `<section class="library-empty-state"><h3 class="library-empty-title">${escapeHtml(
-                    t("live_no_channels", {}, "No channels match this filter.")
-                  )}</h3></section>`
-                : `<section class="live-channel-list">
-                    <div class="live-channel-count">${escapeHtml(
-                      t("live_channel_count", { count: channels.length }, `${channels.length} channels`)
-                    )}</div>
-                    <div class="live-channel-grid">
-                      ${channels
+                  <div class="live-filter-row">
+                    <label class="live-search">
+                      <span class="material-icons" aria-hidden="true">search</span>
+                      <input class="live-search-input focusable"
+                             type="search"
+                             data-action="search"
+                             data-row="2"
+                             data-col="0"
+                             placeholder="${escapeHtml(t("live_search_channels", {}, "Search channels"))}"
+                             value="${escapeHtml(state.query)}" />
+                    </label>
+                    <div class="live-groups">
+                      <button class="live-chip focusable${!state.selectedGroupTitle ? " selected" : ""}"
+                              data-action="select-group"
+                              data-group=""
+                              data-row="3"
+                              data-col="0">
+                        ${escapeHtml(t("live_groups_all", {}, "All"))}
+                      </button>
+                      ${state.groups
                         .map(
-                          (channel, index) => `
-                            <button class="live-channel-card focusable"
-                                    data-action="play-channel"
-                                    data-channel-id="${escapeHtml(channel.id)}"
-                                    data-row="${4 + Math.floor(index / 3)}"
-                                    data-col="${index % 3}">
-                              ${
-                                channel.logoUrl
-                                  ? `<img class="live-channel-logo" src="${escapeHtml(
-                                      channel.logoUrl
-                                    )}" alt="" loading="lazy" />`
-                                  : `<div class="live-channel-logo live-channel-logo-fallback">${escapeHtml(
-                                      channel.name.slice(0, 1).toUpperCase()
-                                    )}</div>`
-                              }
-                              <div class="live-channel-copy">
-                                <div class="live-channel-name">${escapeHtml(channel.name)}</div>
-                                <div class="live-channel-meta">${escapeHtml(
-                                  channel.groupTitle || IptvRepository.UNGROUPED
-                                )}</div>
-                              </div>
+                          (group, index) => `
+                            <button class="live-chip focusable${
+                              state.selectedGroupTitle === group.title ? " selected" : ""
+                            }"
+                                    data-action="select-group"
+                                    data-group="${escapeHtml(group.title)}"
+                                    data-row="3"
+                                    data-col="${index + 1}">
+                              ${escapeHtml(group.title)}
+                              <span class="live-chip-count">${group.channels.length}</span>
                             </button>
                           `
                         )
                         .join("")}
                     </div>
-                  </section>`
+                  </div>
+                </section>
+
+                ${
+                  state.errorMessage
+                    ? `<div class="live-error">${escapeHtml(state.errorMessage)}</div>`
+                    : ""
+                }
+
+                ${
+                  state.isLoading
+                    ? `<section class="live-empty live-empty-soft">
+                         ${renderLoadingIndicator({ size: "medium" })}
+                         <p>${escapeHtml(t("live_loading", {}, "Loading channels"))}</p>
+                       </section>`
+                    : channels.length === 0
+                      ? `<section class="live-empty live-empty-soft">
+                           <p>${escapeHtml(t("live_no_channels", {}, "No channels match this filter."))}</p>
+                         </section>`
+                      : `<section class="live-list-wrap">
+                           <div class="live-list-meta">${escapeHtml(
+                             t(
+                               "live_channel_count",
+                               { count: channels.length },
+                               `${channels.length} channels`
+                             )
+                           )}</div>
+                           <div class="live-list" role="list">
+                             ${channels
+                               .map(
+                                 (channel, index) => `
+                                   <button class="live-row focusable"
+                                           role="listitem"
+                                           data-action="play-channel"
+                                           data-channel-id="${escapeHtml(channel.id)}"
+                                           data-row="${4 + index}"
+                                           data-col="0">
+                                     ${
+                                       channel.logoUrl
+                                         ? `<img class="live-row-logo" src="${escapeHtml(
+                                             channel.logoUrl
+                                           )}" alt="" loading="lazy" />`
+                                         : `<div class="live-row-logo live-row-logo-fallback">${escapeHtml(
+                                             channel.name.slice(0, 1).toUpperCase()
+                                           )}</div>`
+                                     }
+                                     <span class="live-row-copy">
+                                       <span class="live-row-name">${escapeHtml(channel.name)}</span>
+                                       <span class="live-row-group">${escapeHtml(
+                                         channel.groupTitle || IptvRepository.UNGROUPED
+                                       )}</span>
+                                     </span>
+                                     <span class="material-icons live-row-play" aria-hidden="true">play_arrow</span>
+                                   </button>
+                                 `
+                               )
+                               .join("")}
+                           </div>
+                         </section>`
+                }
+              `
           }
         </main>
       </div>
     `;
 
-    bindRootSidebarEvents(this.container, {
-      currentRoute: "live"
-    });
+    bindRootSidebarEvents(this.container, { currentRoute: "live" });
     ScreenUtils.indexFocusables(this.container);
     if (restoreSearch) {
       const input = this.container.querySelector('[data-action="search"]');
@@ -234,25 +241,20 @@ export const LiveScreen = {
     const target = event.target?.closest?.("[data-action]");
     if (!target) return;
     const action = target.getAttribute("data-action");
+    if (action === "open-settings") {
+      await Router.navigate("settings", { section: "iptv" });
+      return;
+    }
     if (action === "select-source") {
       await IptvRepository.selectSource(target.getAttribute("data-source-id"));
       return;
     }
-    if (action === "remove-source") {
-      await IptvRepository.removeSource(target.getAttribute("data-source-id"));
-      return;
-    }
     if (action === "select-group") {
-      const group = target.getAttribute("data-group") || "";
-      IptvRepository.selectGroup(group || null);
+      IptvRepository.selectGroup(target.getAttribute("data-group") || null);
       return;
     }
     if (action === "refresh") {
       await IptvRepository.refreshSelectedSource();
-      return;
-    }
-    if (action === "add") {
-      this.openAddDialog();
       return;
     }
     if (action === "play-channel") {
@@ -282,138 +284,14 @@ export const LiveScreen = {
     }
   },
 
-  openAddDialog() {
-    this.addKind = "M3U";
-    const content = document.createElement("div");
-    content.className = "live-add-form";
-    content.innerHTML = `
-      <div class="live-add-kinds">
-        <button type="button" class="live-group-chip selected" data-kind="M3U">M3U</button>
-        <button type="button" class="live-group-chip" data-kind="Stalker">Stalker</button>
-        <button type="button" class="live-group-chip" data-kind="Xtream">Xtream</button>
-      </div>
-      <label class="live-field">
-        <span>${escapeHtml(t("live_name_label", {}, "Name"))}</span>
-        <input class="live-input" data-field="name" type="text" />
-      </label>
-      <div data-fields="M3U">
-        <label class="live-field">
-          <span>${escapeHtml(t("live_m3u_url_label", {}, "M3U URL"))}</span>
-          <input class="live-input" data-field="url" type="url" placeholder="https://…" />
-        </label>
-      </div>
-      <div data-fields="Stalker" hidden>
-        <label class="live-field">
-          <span>${escapeHtml(t("live_portal_url_label", {}, "Portal URL"))}</span>
-          <input class="live-input" data-field="portalUrl" type="url" placeholder="http://…" />
-        </label>
-        <label class="live-field">
-          <span>${escapeHtml(t("live_mac_label", {}, "MAC address"))}</span>
-          <input class="live-input" data-field="mac" type="text" placeholder="00:1A:79:…" />
-        </label>
-      </div>
-      <div data-fields="Xtream" hidden>
-        <label class="live-field">
-          <span>${escapeHtml(t("live_server_url_label", {}, "Server URL"))}</span>
-          <input class="live-input" data-field="serverUrl" type="url" placeholder="http://…" />
-        </label>
-        <label class="live-field">
-          <span>${escapeHtml(t("live_username_label", {}, "Username"))}</span>
-          <input class="live-input" data-field="username" type="text" />
-        </label>
-        <label class="live-field">
-          <span>${escapeHtml(t("live_password_label", {}, "Password"))}</span>
-          <input class="live-input" data-field="password" type="password" />
-        </label>
-      </div>
-    `;
-
-    const syncKind = () => {
-      content.querySelectorAll("[data-kind]").forEach((button) => {
-        button.classList.toggle("selected", button.getAttribute("data-kind") === this.addKind);
-      });
-      content.querySelectorAll("[data-fields]").forEach((block) => {
-        block.hidden = block.getAttribute("data-fields") !== this.addKind;
-      });
-    };
-
-    content.addEventListener("click", (event) => {
-      const kindButton = event.target?.closest?.("[data-kind]");
-      if (!kindButton) return;
-      this.addKind = kindButton.getAttribute("data-kind");
-      syncKind();
-    });
-
-    this.addDialog = new NuvioDialog({
-      title: t("live_add_source", {}, "Add source"),
-      widthVw: 48,
-      content,
-      onDismiss: () => {
-        this.addDialog = null;
-      },
-      buttons: [
-        {
-          label: t("common.cancel", {}, "Cancel"),
-          key: "cancel",
-          onAction: () => {
-            this.addDialog?.destroy();
-            this.addDialog = null;
-          }
-        },
-        {
-          label: t("common.add", {}, "Add"),
-          key: "add",
-          onAction: async () => {
-            const value = (field) => content.querySelector(`[data-field="${field}"]`)?.value || "";
-            let ok = false;
-            if (this.addKind === "M3U") {
-              ok = await IptvRepository.addM3uSource(value("name"), value("url"));
-            } else if (this.addKind === "Stalker") {
-              ok = await IptvRepository.addStalkerSource(
-                value("name"),
-                value("portalUrl"),
-                value("mac")
-              );
-            } else {
-              ok = await IptvRepository.addXtreamSource(
-                value("name"),
-                value("serverUrl"),
-                value("username"),
-                value("password")
-              );
-            }
-            if (ok) {
-              this.addDialog?.destroy();
-              this.addDialog = null;
-            } else {
-              this.render();
-            }
-          }
-        }
-      ]
-    });
-    this.addDialog.mount(document.body);
-    syncKind();
-  },
-
   async onKeyDown(event) {
     if (Platform.isBackEvent(event)) {
       event?.preventDefault?.();
-      if (this.addDialog) {
-        this.addDialog.destroy();
-        this.addDialog = null;
-        return;
-      }
       await Router.navigate("home");
     }
   },
 
   consumeBackRequest() {
-    if (this.addDialog) {
-      this.addDialog.destroy();
-      this.addDialog = null;
-      return true;
-    }
     return false;
   },
 
@@ -429,10 +307,6 @@ export const LiveScreen = {
     if (this.boundInput) {
       this.container?.removeEventListener("input", this.boundInput);
       this.boundInput = null;
-    }
-    if (this.addDialog) {
-      this.addDialog.destroy();
-      this.addDialog = null;
     }
     ScreenUtils.hide(this.container);
   }

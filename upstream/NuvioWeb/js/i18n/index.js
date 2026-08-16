@@ -51,6 +51,8 @@ const KEY_ALIASES = {
   "sidebar.live": "nav_live",
   "sidebar.search": "nav_search",
   "sidebar.settings": "nav_settings",
+  "settings.sections.iptv.label": "settings_iptv_section",
+  "settings.sections.iptv.subtitle": "settings_iptv_subtitle",
   "settings.account.signInWithQr": "account_signin_qr_title",
   "settings.account.signInWithQrSubtitle": "account_signin_qr_subtitle",
   "settings.account.signOut": "account_sign_out",

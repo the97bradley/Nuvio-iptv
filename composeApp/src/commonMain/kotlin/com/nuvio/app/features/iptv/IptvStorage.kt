@@ -42,6 +42,7 @@ internal object IptvStorage {
         val sources = payload.sources.mapNotNull { stored ->
             val kind = runCatching { IptvSourceKind.valueOf(stored.kind) }.getOrDefault(IptvSourceKind.M3U)
             if (stored.id.isBlank() || stored.url.isBlank()) return@mapNotNull null
+            if (stored.id == "builtin-usa-public") return@mapNotNull null
             IptvPlaylistSource(
                 id = stored.id,
                 name = stored.name.ifBlank { "Playlist" },

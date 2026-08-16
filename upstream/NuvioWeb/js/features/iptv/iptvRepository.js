@@ -1,8 +1,7 @@
-import { BuiltinUsaChannels } from "./builtinUsaChannels.js";
 import { IptvStore } from "./iptvStore.js";
 import { parseM3uPlaylist } from "./m3uPlaylistParser.js";
-import { StalkerPortalClient } from "./stalkerPortalClient.js";
-import { XtreamCodesClient } from "./xtreamCodesClient.js";
+import { StalkerPortalClient, normalizeMac } from "./stalkerPortalClient.js";
+import { XtreamCodesClient, normalizeServerBase } from "./xtreamCodesClient.js";
 
 const UNGROUPED = "Ungrouped";
 
@@ -21,7 +20,9 @@ function groupChannels(channels) {
     .sort((a, b) => a[0].localeCompare(b[0], undefined, { sensitivity: "base" }))
     .map(([title, items]) => ({
       title,
-      channels: items.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
+      channels: items
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
     }));
 }
 
@@ -99,9 +100,8 @@ export const IptvRepository = {
 
   async refreshFromStorage() {
     const payload = IptvStore.load();
-    const sources = BuiltinUsaChannels.mergeInto(payload.sources);
-    const selected =
-      sources.find((source) => source.id === payload.selectedSourceId)?.id || sources[0]?.id || null;
+    const sources = payload.sources;
+    const selected = payload.selectedSourceId || sources[0]?.id || null;
     IptvStore.save(sources, selected);
     this._channelCache.clear();
     this._stalkerClients.clear();
@@ -160,7 +160,7 @@ export const IptvRepository = {
   async addStalkerSource(name, portalUrl, macAddress) {
     let mac;
     try {
-      mac = (await import("./stalkerPortalClient.js")).normalizeMac(macAddress);
+      mac = normalizeMac(macAddress);
     } catch (error) {
       this._update({ errorMessage: error?.message || "Invalid MAC address." });
       return false;
@@ -186,7 +186,7 @@ export const IptvRepository = {
   async addXtreamSource(name, serverUrl, username, password) {
     let server;
     try {
-      server = (await import("./xtreamCodesClient.js")).normalizeServerBase(serverUrl);
+      server = normalizeServerBase(serverUrl);
     } catch (error) {
       this._update({ errorMessage: error?.message || "Invalid server URL." });
       return false;
@@ -209,13 +209,7 @@ export const IptvRepository = {
   },
 
   async removeSource(sourceId) {
-    if (BuiltinUsaChannels.isBuiltin(sourceId)) {
-      this._update({ errorMessage: "USA Public channels are built in and cannot be removed." });
-      return;
-    }
-    const sources = BuiltinUsaChannels.mergeInto(
-      this._state.sources.filter((source) => source.id !== sourceId)
-    );
+    const sources = this._state.sources.filter((source) => source.id !== sourceId);
     const nextSelected =
       this._state.selectedSourceId === sourceId
         ? sources[0]?.id || null
@@ -253,7 +247,7 @@ export const IptvRepository = {
   },
 
   async persistAndLoad(source) {
-    const sources = BuiltinUsaChannels.mergeInto([...this._state.sources, source]);
+    const sources = [...this._state.sources, source];
     IptvStore.save(sources, source.id);
     this._update({
       sources,
@@ -277,7 +271,7 @@ export const IptvRepository = {
     try {
       let channels = [];
       if (source.kind === "M3U") {
-        channels = await this.fetchM3uChannels(source, forceNetwork);
+        channels = await this.fetchM3uChannels(source);
       } else if (source.kind === "Stalker") {
         channels = await this.clientFor(source).loadChannels(source.id);
       } else if (source.kind === "Xtream") {
@@ -308,45 +302,18 @@ export const IptvRepository = {
       throw new Error("Stalker source is missing a MAC address.");
     }
     if (!this._stalkerClients.has(source.id)) {
-      this._stalkerClients.set(
-        source.id,
-        new StalkerPortalClient(source.url, source.macAddress)
-      );
+      this._stalkerClients.set(source.id, new StalkerPortalClient(source.url, source.macAddress));
     }
     return this._stalkerClients.get(source.id);
   },
 
-  async fetchM3uChannels(source, forceNetwork) {
-    if (BuiltinUsaChannels.isBuiltin(source)) {
-      return this.fetchBuiltinUsaChannels(forceNetwork);
-    }
+  async fetchM3uChannels(source) {
     const response = await fetch(source.url, { method: "GET", redirect: "follow" });
     if (!response.ok) {
       throw new Error(`Playlist request failed (${response.status})`);
     }
     const body = await response.text();
     return parseM3uPlaylist(body, source.id);
-  },
-
-  async fetchBuiltinUsaChannels(forceNetwork) {
-    if (forceNetwork) {
-      try {
-        const response = await fetch(BuiltinUsaChannels.RefreshUrl, {
-          method: "GET",
-          redirect: "follow"
-        });
-        if (response.ok) {
-          const body = await response.text();
-          const remote = parseM3uPlaylist(body, BuiltinUsaChannels.SourceId).filter((channel) =>
-            BuiltinUsaChannels.isCommonUsaChannel(channel)
-          );
-          if (remote.length) return remote;
-        }
-      } catch (_) {
-        // Fall back to embedded playlist.
-      }
-    }
-    return BuiltinUsaChannels.loadEmbeddedChannels();
   },
 
   publishChannels(channels) {

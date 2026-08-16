@@ -52,12 +52,7 @@ Nuvio is a Stremio-style client: catalogs need stream addons to play. Live IPTV 
 
 Supported source kinds: **M3U**, **Stalker / Ministra** (portal URL + MAC), **Xtream Codes** (server + user + pass).
 
-Built-in **USA Public** source (`builtin-usa-public`):
-
-- ~180 curated public / FAST-style USA channels
-- Sources: [iptv-org](https://github.com/iptv-org/iptv) US + [Free-TV](https://github.com/Free-TV/IPTV) USA (via https://iptvplayer.stream/public-iptv-playlist discovery)
-- Always merged first; **not removable**
-- Offline from embedded playlist; refresh tries remote iptv-org US (filtered) then falls back
+No built-in channel packs. Users add their own playlists.
 
 ### Android (KMP)
 
@@ -69,12 +64,9 @@ Package: `composeApp/src/commonMain/kotlin/com/nuvio/app/features/iptv/`
 | `M3uPlaylistParser.kt` | M3U parse |
 | `StalkerPortalClient.kt` | Handshake, genres, channels, `create_link` |
 | `XtreamCodesClient.kt` | `player_api` live cats/streams |
-| `BuiltinUsaChannels.kt` | Built-in source constants |
 | `IptvRepository.kt` | Orchestration |
 | `IptvStorage.kt` + android/ios actuals | Persist sources JSON |
-| `LiveTvScreen.kt` | Live UI |
-
-Playlist asset: `composeApp/src/commonMain/composeResources/files/usa_public.m3u`
+| `LiveTvScreen.kt` | Live UI (add sources in-app for now) |
 
 Wire-in: Live tab in `App.kt` / native tab bridge; `IptvPlaylistStorage.initialize` in `MainActivity`.
 
@@ -92,9 +84,9 @@ Android SDK in cloud VMs is often at `/opt/android-sdk`; `local.properties` is g
 
 | Path | Role |
 |------|------|
-| `js/features/iptv/` | Parser, Stalker, Xtream, builtin, store, repository |
-| `js/ui/screens/live/liveScreen.js` | Live screen |
-| `assets/iptv/usa_public.m3u` | Same curated list |
+| `js/features/iptv/` | Parser, Stalker, Xtream, store, repository, add dialog |
+| `js/ui/screens/live/liveScreen.js` | Live channel browser |
+| Settings → **IPTV** | Add / manage M3U, Stalker, Xtream playlists |
 | Sidebar | `gotoLive` between Library and Settings |
 
 Play: `Router.navigate("player", { streamUrl, playerTitle, itemId, itemType: "movie" })`.
@@ -105,13 +97,13 @@ npm install && npm run build && npm run serve   # http://localhost:4173
 node --test js/features/iptv/iptv.test.mjs
 ```
 
-**CORS:** many remote M3U / portal / stream URLs fail in desktop browsers; Android and packaged TV builds are less affected. USA Public list is embedded so the UI still works offline.
+**CORS:** many remote M3U / portal / stream URLs fail in desktop browsers; Android and packaged TV builds are less affected.
 
 ## Git / agent workflow
 
 - Preferred user preference: **push to `main`** (fast-forward merge after feature work).
 - Cloud agents still use branches `cursor/<descriptive-name>-fe7b` and register PRs via ManagePullRequest.
-- Recent tips on `main`: Live IPTV Android (M3U → Stalker → Xtream → USA Public) then web Live port.
+- Recent tips on `main`: Live IPTV Android + web; playlists via Settings→IPTV on web; no built-in channel packs.
 
 ## Explicit non-goals / guardrails
 

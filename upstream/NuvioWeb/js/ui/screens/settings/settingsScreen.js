@@ -58,6 +58,8 @@ import {
   normalizeStreamBadgeChipColor,
   STREAM_BADGE_IMPORT_LIMIT
 } from "../../../core/streams/streamBadgeRules.js";
+import { IptvRepository } from "../../../features/iptv/iptvRepository.js";
+import { openIptvAddSourceDialog } from "../../../features/iptv/iptvAddSourceDialog.js";
 import {
   TRAKT_CONTINUE_WATCHING_DAYS_CAP_ALL,
   TraktLibrarySourceMode,
@@ -656,6 +658,13 @@ const SECTION_META = [
     subtitleKey: "settings_stream_badges_description"
   },
   {
+    id: "iptv",
+    labelKey: "settings.sections.iptv.label",
+    label: "IPTV",
+    subtitleKey: "settings.sections.iptv.subtitle",
+    subtitle: "M3U playlists, Stalker portals, and Xtream Codes logins"
+  },
+  {
     id: "playback",
     labelKey: "settings.sections.playback.label",
     subtitleKey: "settings.sections.playback.subtitle"
@@ -686,6 +695,7 @@ const SECTION_ICONS = {
   plugins: "build",
   integration: "link",
   streams: "style",
+  iptv: "live_tv",
   advanced: "tune",
   trakt: "trakt",
   about: "info"
@@ -2112,7 +2122,12 @@ export const SettingsScreen = {
     this.restoreRailScrollTop = persistedUiState.railScrollTop;
     this.railScrollTop = persistedUiState.railScrollTop;
     this.suppressNextRailFocusScroll = Boolean(navigationContext?.isBackNavigation);
-    this.activeSection = persistedUiState.activeSection || this.activeSection || null;
+    const requestedSection = String(_params?.section || "").trim();
+    this.activeSection =
+      requestedSection ||
+      persistedUiState.activeSection ||
+      this.activeSection ||
+      null;
     this.focusZone = "nav";
     this.sidebarFocusIndex = Number.isFinite(this.sidebarFocusIndex) ? this.sidebarFocusIndex : 0;
     this.navIndex = Number.isFinite(persistedUiState.navIndex)
@@ -7075,6 +7090,147 @@ export const SettingsScreen = {
     `;
   },
 
+  renderIptvSection() {
+    const state = IptvRepository.getState();
+    const sources = Array.isArray(state.sources) ? state.sources : [];
+
+    this.actionMap.set("iptv:add", async () => {
+      const added = await openIptvAddSourceDialog({
+        onAdded: async () => {
+          await IptvRepository.ensureLoaded();
+          await this.render({ refreshModel: false });
+        }
+      });
+      if (added) {
+        await this.render({ refreshModel: false });
+      }
+    });
+
+    this.actionMap.set("iptv:open-live", async () => {
+      await Router.navigate("live");
+    });
+
+    sources.forEach((source) => {
+      this.actionMap.set(`iptv:source:${source.id}`, () => {
+        this.openOptionDialog({
+          title: source.name,
+          subtitle: `${source.kind} · ${source.url}`,
+          returnFocusKey: `iptv:source:${source.id}`,
+          options: [
+            {
+              id: "select",
+              label: t("live_open_playlist", {}, "Open in Live")
+            },
+            {
+              id: "refresh",
+              label: t("live_refresh", {}, "Refresh channels")
+            },
+            {
+              id: "delete",
+              label: t("live_remove_source", {}, "Remove playlist"),
+              danger: true
+            }
+          ],
+          onSelect: async (option) => {
+            if (option?.id === "select") {
+              await IptvRepository.selectSource(source.id);
+              await Router.navigate("live");
+              return;
+            }
+            if (option?.id === "refresh") {
+              await IptvRepository.selectSource(source.id);
+              await IptvRepository.refreshSelectedSource();
+              await this.render({ refreshModel: false });
+              return;
+            }
+            if (option?.id === "delete") {
+              await IptvRepository.removeSource(source.id);
+              await this.render({ refreshModel: false });
+            }
+          }
+        });
+      });
+    });
+
+    return `
+      <header class="settings-content-header">
+        <h1 class="settings-title">${escapeHtml(t("settings.sections.iptv.label", {}, "IPTV"))}</h1>
+        <p class="settings-subtitle">${escapeHtml(
+          t(
+            "settings.sections.iptv.subtitle",
+            {},
+            "Add M3U playlists, Stalker portals, or Xtream Codes logins for Live."
+          )
+        )}</p>
+      </header>
+      <div class="settings-group-card">
+        <div class="settings-stack">
+          ${this.renderActionRow({
+            focusKey: "iptv:add",
+            title: t("live_add_source", {}, "Add playlist"),
+            subtitle: t(
+              "settings.iptv.add_subtitle",
+              {},
+              "M3U URL, Stalker portal + MAC, or Xtream server + login"
+            ),
+            value: t("common.add", {}, "Add"),
+            leadingIcon: "playlist_add"
+          })}
+          ${this.renderActionRow({
+            focusKey: "iptv:open-live",
+            title: t("live_title", {}, "Live"),
+            subtitle: t("settings.iptv.open_live_subtitle", {}, "Browse and play loaded channels"),
+            leadingIcon: "live_tv"
+          })}
+        </div>
+      </div>
+      <div class="settings-group-card">
+        <div class="settings-group-heading">
+          <div class="settings-group-title">${escapeHtml(
+            t("settings.iptv.playlists_heading", {}, "Your playlists")
+          )}</div>
+          <div class="settings-group-subtitle">${escapeHtml(
+            sources.length
+              ? t(
+                  "settings.iptv.playlists_count",
+                  { count: sources.length },
+                  `${sources.length} configured`
+                )
+              : t("settings.iptv.playlists_empty", {}, "None yet — add one above")
+          )}</div>
+        </div>
+        <div class="settings-stack">
+          ${
+            sources.length
+              ? sources
+                  .map((source) =>
+                    this.renderActionRow({
+                      focusKey: `iptv:source:${source.id}`,
+                      title: source.name,
+                      subtitle: `${source.kind} · ${source.url}`,
+                      value: source.kind,
+                      leadingIcon:
+                        source.kind === "Stalker"
+                          ? "router"
+                          : source.kind === "Xtream"
+                            ? "vpn_key"
+                            : "link"
+                    })
+                  )
+                  .join("")
+              : `<div class="settings-empty-state"><p>${escapeHtml(
+                  t(
+                    "settings.iptv.empty_hint",
+                    {},
+                    "Playlists you add here show up in the Live tab."
+                  )
+                )}</p></div>`
+          }
+        </div>
+      </div>
+    `;
+  },
+
   renderSection(section, model) {
     if (section.id === "account") return this.renderAccountSection(model);
     if (section.id === "profiles") return this.renderProfilesSection(model);
@@ -7084,6 +7240,7 @@ export const SettingsScreen = {
     if (section.id === "plugins") return this.renderPluginsSection();
     if (section.id === "integration") return this.renderIntegrationSection(model);
     if (section.id === "streams") return this.renderStreamsSection(model);
+    if (section.id === "iptv") return this.renderIptvSection(model);
     if (section.id === "playback") return this.renderPlaybackSection(model);
     if (section.id === "trakt") return this.renderTraktLauncher(model);
     if (section.id === "advanced") return this.renderAdvancedSection(model);
@@ -7183,6 +7340,9 @@ export const SettingsScreen = {
     const sectionChanged = this.renderedSectionId !== section.id;
     const previousScrollState = !sectionChanged ? captureSettingsScrollState(contentSlot) : null;
     this.renderedSectionId = section.id;
+    if (section.id === "iptv") {
+      await IptvRepository.ensureLoaded();
+    }
     if (contentSlot) {
       contentSlot.innerHTML = this.renderSection(section, this.model);
       if (previousScrollState) {
