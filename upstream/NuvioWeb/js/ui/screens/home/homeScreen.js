@@ -9150,7 +9150,10 @@ export const HomeScreen = {
     bindRootSidebarEvents(this.container, {
       currentRoute: "home",
       onSelectedAction: () => this.closeSidebarToContent(),
-      onExpandSidebar: () => this.openSidebar()
+      onExpandSidebar: () => this.openSidebar(),
+      onCollapseSidebar: () => {
+        this.sidebarExpanded = false;
+      }
     });
     this.scheduleModernSidebarPillAutoCollapse();
 

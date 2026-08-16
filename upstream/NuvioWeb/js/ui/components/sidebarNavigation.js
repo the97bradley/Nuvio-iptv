@@ -467,7 +467,7 @@ export function renderRootSidebar({
 
 export function bindRootSidebarEvents(
   container,
-  { currentRoute = "", onExpandSidebar = null, onSelectedAction = null } = {}
+  { currentRoute = "", onExpandSidebar = null, onCollapseSidebar = null, onSelectedAction = null } = {}
 ) {
   const focusables = Array.from(
     container?.querySelectorAll(".home-sidebar .focusable, .modern-sidebar-panel .focusable") || []
@@ -531,8 +531,79 @@ export function bindRootSidebarEvents(
       };
     });
 
+  bindSidebarHoverAutoHide(container, { onCollapseSidebar });
   scheduleRootSidebarTextFit(container);
   syncSidebarStateClasses(container);
+}
+
+function isSidebarHoverAutoHideEnabled() {
+  if (Platform.isWebOS() || Platform.isTizen()) return false;
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  try {
+    return window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+  } catch (_) {
+    return false;
+  }
+}
+
+function bindSidebarHoverAutoHide(container, { onCollapseSidebar = null } = {}) {
+  if (!isSidebarHoverAutoHideEnabled()) return;
+  const shells = [
+    ...Array.from(container?.querySelectorAll?.(".modern-sidebar-shell") || []),
+    ...Array.from(container?.querySelectorAll?.(".root-sidebar-legacy") || [])
+  ];
+  for (const shell of shells) {
+    if (!shell || shell.__sidebarHoverBound) continue;
+    shell.__sidebarHoverBound = true;
+    shell.classList.add("sidebar-auto-hide");
+    const root =
+      shell.closest?.(".home-shell, .settings-shell, .library-shell, .live-shell, .discover-shell") ||
+      container;
+    root?.classList?.add?.("has-sidebar-auto-hide");
+
+    let leaveTimer = null;
+    const clearLeave = () => {
+      if (leaveTimer) {
+        clearTimeout(leaveTimer);
+        leaveTimer = null;
+      }
+    };
+    const openHover = () => {
+      clearLeave();
+      shell.classList.add("sidebar-hover-open");
+      syncSidebarStateClasses(container);
+    };
+    const closeHover = () => {
+      clearLeave();
+      leaveTimer = setTimeout(() => {
+        leaveTimer = null;
+        const isExpanded =
+          shell.classList.contains("expanded") || shell.classList.contains("content-expanded");
+        shell.classList.remove("sidebar-hover-open");
+        if (isExpanded) {
+          if (shell.classList.contains("modern-sidebar-shell")) {
+            setModernSidebarExpanded(container, false);
+          } else {
+            setLegacySidebarExpanded(container, false);
+          }
+          if (typeof onCollapseSidebar === "function") {
+            try {
+              onCollapseSidebar();
+            } catch (_) {}
+          }
+        }
+        syncSidebarStateClasses(container);
+      }, 160);
+    };
+
+    if (shell.matches?.(":hover")) {
+      openHover();
+    }
+    shell.addEventListener("mouseenter", openHover);
+    shell.addEventListener("mouseleave", closeHover);
+    // Keep open while pointer is over the expanded panel / pill children.
+    shell.addEventListener("focusin", openHover);
+  }
 }
 
 export function setLegacySidebarExpanded(container, expanded) {

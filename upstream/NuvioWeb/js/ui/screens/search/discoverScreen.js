@@ -1550,7 +1550,10 @@ export const DiscoverScreen = {
       bindRootSidebarEvents(this.container, {
         currentRoute: "discover",
         onSelectedAction: () => this.closeSidebarToContent(),
-        onExpandSidebar: () => this.openSidebar()
+        onExpandSidebar: () => this.openSidebar(),
+        onCollapseSidebar: () => {
+          this.sidebarExpanded = false;
+        }
       });
     }
     this.bindCardEvents();

@@ -744,7 +744,10 @@ export const LibraryScreen = {
     bindRootSidebarEvents(this.container, {
       currentRoute: "library",
       onSelectedAction: () => this.focusMainNode(),
-      onExpandSidebar: () => this.focusSidebarNode()
+      onExpandSidebar: () => this.focusSidebarNode(),
+      onCollapseSidebar: () => {
+        this.sidebarExpanded = false;
+      }
     });
     if (this.isModalFocusLocked()) {
       return;
@@ -1068,7 +1071,10 @@ export const LibraryScreen = {
     bindRootSidebarEvents(this.container, {
       currentRoute: "library",
       onSelectedAction: () => this.focusMainNode(),
-      onExpandSidebar: () => this.focusSidebarNode()
+      onExpandSidebar: () => this.focusSidebarNode(),
+      onCollapseSidebar: () => {
+        this.sidebarExpanded = false;
+      }
     });
     if (this.isModalFocusLocked()) {
       return;

@@ -2603,6 +2603,102 @@ button:focus-visible {
   margin-left: 0;
 }
 
+/* Desktop/pointer: hide sidebar until hovered so it stops covering Live/content. */
+@media (hover: hover) and (pointer: fine) {
+  .home-shell.has-sidebar-auto-hide:not(.has-modern-sidebar) .home-main,
+  .settings-shell.has-sidebar-auto-hide:not(.has-modern-sidebar) .settings-workspace,
+  .discover-shell.has-sidebar-auto-hide:not(.has-modern-sidebar).discover-root-route .discover-main {
+    margin-left: 0;
+  }
+
+  .settings-shell.has-sidebar-auto-hide:not(.has-modern-sidebar) .settings-workspace {
+    width: calc(100vw - 128px);
+    margin-left: 64px;
+  }
+
+  .root-sidebar-legacy.sidebar-auto-hide {
+    transition:
+      width 220ms cubic-bezier(0.4, 0, 0.2, 1),
+      padding 220ms cubic-bezier(0.4, 0, 0.2, 1),
+      background-color 180ms ease,
+      opacity 180ms ease;
+  }
+
+  .root-sidebar-legacy.sidebar-auto-hide:not(.sidebar-hover-open):not(.expanded) {
+    width: 14px;
+    padding-left: 0;
+    padding-right: 0;
+    background: transparent;
+  }
+
+  .root-sidebar-legacy.sidebar-auto-hide:not(.sidebar-hover-open):not(.expanded)::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 22%;
+    bottom: 22%;
+    width: 4px;
+    border-radius: 0 6px 6px 0;
+    background: rgba(255, 255, 255, 0.28);
+    pointer-events: none;
+  }
+
+  .root-sidebar-legacy.sidebar-auto-hide:not(.sidebar-hover-open):not(.expanded) .home-nav-list,
+  .root-sidebar-legacy.sidebar-auto-hide:not(.sidebar-hover-open):not(.expanded) .home-profile-pill {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .root-sidebar-legacy.sidebar-auto-hide.sidebar-hover-open:not(.expanded),
+  .root-sidebar-legacy.sidebar-auto-hide.expanded {
+    width: var(--legacy-sidebar-rail-width);
+    padding: var(--legacy-sidebar-padding);
+    background: var(--bg-color);
+  }
+
+  .root-sidebar-legacy.sidebar-auto-hide.sidebar-hover-open:not(.expanded)::after,
+  .root-sidebar-legacy.sidebar-auto-hide.expanded::after {
+    display: none;
+  }
+
+  .modern-sidebar-shell.sidebar-auto-hide {
+    pointer-events: auto;
+    transition: width 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .modern-sidebar-shell.sidebar-auto-hide:not(.sidebar-hover-open):not(.expanded):not(.opening) {
+    width: 16px;
+  }
+
+  .modern-sidebar-shell.sidebar-auto-hide:not(.sidebar-hover-open):not(.expanded):not(.opening)::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 22%;
+    bottom: 22%;
+    width: 4px;
+    border-radius: 0 6px 6px 0;
+    background: rgba(255, 255, 255, 0.28);
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .modern-sidebar-shell.sidebar-auto-hide:not(.sidebar-hover-open):not(.expanded):not(.opening)
+    .modern-sidebar-pill {
+    opacity: 0;
+    transform: translate3d(-10px, -16px, 0) scale(0.92);
+    pointer-events: none;
+  }
+
+  .modern-sidebar-shell.sidebar-auto-hide.sidebar-hover-open:not(.expanded) {
+    width: var(--modern-sidebar-collapsed-width);
+  }
+
+  .live-shell.has-sidebar-auto-hide .live-main {
+    padding-left: 1.5rem;
+  }
+}
+
 /* Inherit the fixed Tizen canvas instead of recalculating nested 100vh. */
 .tizen-tv .home-shell,
 .tizen-tv .home-main,
