@@ -53,10 +53,25 @@ data class IptvUiState(
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
     val isLoaded: Boolean = false,
+    /** Per-source starred channel ids. Live only shows starred channels. */
+    val starredChannelIds: Map<String, List<String>> = emptyMap(),
 ) {
+    fun starredIdsFor(sourceId: String?): List<String> {
+        if (sourceId.isNullOrBlank()) return emptyList()
+        return starredChannelIds[sourceId].orEmpty()
+    }
+
+    fun isStarred(channel: IptvChannel): Boolean {
+        return starredIdsFor(channel.sourceId).contains(channel.id)
+    }
+
+    fun starredCount(sourceId: String?): Int = starredIdsFor(sourceId).size
+
     val filteredChannels: List<IptvChannel>
         get() {
-            val bySource = selectedSourceId?.let { id -> channels.filter { it.sourceId == id } } ?: channels
+            val starredOnly = channels.filter { isStarred(it) }
+            val bySource = selectedSourceId?.let { id -> starredOnly.filter { it.sourceId == id } }
+                ?: starredOnly
             val byGroup = selectedGroupTitle?.let { group ->
                 bySource.filter { (it.groupTitle ?: UngroupedTitle) == group }
             } ?: bySource

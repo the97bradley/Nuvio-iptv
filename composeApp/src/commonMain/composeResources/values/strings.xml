@@ -406,6 +406,11 @@
     <string name="iptv_kind_xtream">Xtream Codes</string>
     <string name="iptv_mac_label">MAC address</string>
     <string name="iptv_no_channels">No channels match this filter.</string>
+    <string name="iptv_no_stars_title">No starred channels</string>
+    <string name="iptv_no_stars_body">Star the channels you want to watch. Live only shows starred channels.</string>
+    <string name="iptv_star_channels">Star channels</string>
+    <string name="iptv_star_channels_done">Done</string>
+    <string name="iptv_starred_count">%1$d starred</string>
     <string name="iptv_password_label">Password</string>
     <string name="iptv_playlist_name_label">Name</string>
     <string name="iptv_playlist_url_label">M3U URL</string>

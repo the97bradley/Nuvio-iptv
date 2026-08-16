@@ -54,19 +54,24 @@ Supported source kinds: **M3U**, **Stalker / Ministra** (portal URL + MAC), **Xt
 
 No built-in channel packs. Users add their own playlists.
 
+**Starred channels:** Adding a playlist does **not** put every channel in Live. Star channels first; Live shows starred only. New playlists start with zero stars.
+
+- **Web:** Settings → IPTV → open playlist → star/unstar
+- **Android:** Live header star button (also opens after adding a playlist)
+
 ### Android (KMP)
 
 Package: `composeApp/src/commonMain/kotlin/com/nuvio/app/features/iptv/`
 
 | File | Role |
 |------|------|
-| `IptvModels.kt` | Models / UI state |
+| `IptvModels.kt` | Models / UI state (incl. starred ids) |
 | `M3uPlaylistParser.kt` | M3U parse |
 | `StalkerPortalClient.kt` | Handshake, genres, channels, `create_link` |
 | `XtreamCodesClient.kt` | `player_api` live cats/streams |
-| `IptvRepository.kt` | Orchestration |
-| `IptvStorage.kt` + android/ios actuals | Persist sources JSON |
-| `LiveTvScreen.kt` | Live UI (add sources in-app for now) |
+| `IptvRepository.kt` | Orchestration + star toggles |
+| `IptvStorage.kt` + android/ios actuals | Persist sources + starredChannelIds |
+| `LiveTvScreen.kt` | Live UI + star-channels dialog |
 
 Wire-in: Live tab in `App.kt` / native tab bridge; `IptvPlaylistStorage.initialize` in `MainActivity`.
 
@@ -84,9 +89,9 @@ Android SDK in cloud VMs is often at `/opt/android-sdk`; `local.properties` is g
 
 | Path | Role |
 |------|------|
-| `js/features/iptv/` | Parser, Stalker, Xtream, store, repository, add dialog |
-| `js/ui/screens/live/liveScreen.js` | Live channel browser |
-| Settings → **IPTV** | Add / manage M3U, Stalker, Xtream playlists |
+| `js/features/iptv/` | Parser, Stalker, Xtream, store (incl. `starredChannelIds`), repository, add dialog |
+| `js/ui/screens/live/liveScreen.js` | Live browser — **starred channels only** |
+| Settings → **IPTV** | Add playlists; open playlist to star/unstar channels |
 | Sidebar | `gotoLive` between Library and Settings |
 
 Play: `Router.navigate("player", { streamUrl, playerTitle, itemId, itemType: "movie" })`.
@@ -103,7 +108,7 @@ node --test js/features/iptv/iptv.test.mjs
 
 - Preferred user preference: **push to `main`** (fast-forward merge after feature work).
 - Cloud agents still use branches `cursor/<descriptive-name>-fe7b` and register PRs via ManagePullRequest.
-- Recent tips on `main`: Live IPTV Android + web; playlists via Settings→IPTV on web; no built-in channel packs.
+- Recent tips on `main`: Live IPTV Android + web; web playlists via Settings→IPTV; **star channels in playlist settings; Live = starred only**; no built-in channel packs.
 
 ## Explicit non-goals / guardrails
 

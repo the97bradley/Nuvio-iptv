@@ -26,6 +26,13 @@ private data class StoredIptvSource(
 private data class StoredIptvPayload(
     val sources: List<StoredIptvSource> = emptyList(),
     val selectedSourceId: String? = null,
+    val starredChannelIds: Map<String, List<String>> = emptyMap(),
+)
+
+data class IptvStoredState(
+    val sources: List<IptvPlaylistSource>,
+    val selectedSourceId: String?,
+    val starredChannelIds: Map<String, List<String>> = emptyMap(),
 )
 
 internal object IptvStorage {
@@ -34,11 +41,13 @@ internal object IptvStorage {
         encodeDefaults = true
     }
 
-    fun load(): Pair<List<IptvPlaylistSource>, String?> {
+    fun load(): IptvStoredState {
         val raw = IptvPlaylistStorage.loadPayload().orEmpty()
-        if (raw.isBlank()) return emptyList<IptvPlaylistSource>() to null
+        if (raw.isBlank()) {
+            return IptvStoredState(sources = emptyList(), selectedSourceId = null)
+        }
         val payload = runCatching { json.decodeFromString<StoredIptvPayload>(raw) }.getOrNull()
-            ?: return emptyList<IptvPlaylistSource>() to null
+            ?: return IptvStoredState(sources = emptyList(), selectedSourceId = null)
         val sources = payload.sources.mapNotNull { stored ->
             val kind = runCatching { IptvSourceKind.valueOf(stored.kind) }.getOrDefault(IptvSourceKind.M3U)
             if (stored.id.isBlank() || stored.url.isBlank()) return@mapNotNull null
@@ -55,10 +64,28 @@ internal object IptvStorage {
                 lastRefreshedAtEpochMs = stored.lastRefreshedAtEpochMs,
             )
         }
-        return sources to payload.selectedSourceId
+        val sourceIds = sources.map { it.id }.toSet()
+        val starred = payload.starredChannelIds
+            .filterKeys { it in sourceIds }
+            .mapValues { (_, ids) -> ids.map { it.trim() }.filter { it.isNotEmpty() }.distinct() }
+            .filterValues { it.isNotEmpty() }
+        return IptvStoredState(
+            sources = sources,
+            selectedSourceId = payload.selectedSourceId,
+            starredChannelIds = starred,
+        )
     }
 
-    fun save(sources: List<IptvPlaylistSource>, selectedSourceId: String?) {
+    fun save(
+        sources: List<IptvPlaylistSource>,
+        selectedSourceId: String?,
+        starredChannelIds: Map<String, List<String>> = emptyMap(),
+    ) {
+        val sourceIds = sources.map { it.id }.toSet()
+        val starred = starredChannelIds
+            .filterKeys { it in sourceIds }
+            .mapValues { (_, ids) -> ids.map { it.trim() }.filter { it.isNotEmpty() }.distinct() }
+            .filterValues { it.isNotEmpty() }
         val payload = StoredIptvPayload(
             sources = sources.map {
                 StoredIptvSource(
@@ -74,6 +101,7 @@ internal object IptvStorage {
                 )
             },
             selectedSourceId = selectedSourceId,
+            starredChannelIds = starred,
         )
         IptvPlaylistStorage.savePayload(json.encodeToString(payload))
     }

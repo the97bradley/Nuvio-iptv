@@ -17,7 +17,7 @@ function t(key, params = {}, fallback = key) {
 
 /**
  * Multi-kind IPTV source dialog (M3U / Stalker / Xtream).
- * Returns a Promise<boolean> — true if a source was added.
+ * Returns a Promise<string|null> — new source id when added, otherwise null.
  */
 export function openIptvAddSourceDialog({ onAdded = null } = {}) {
   return new Promise((resolve) => {
@@ -84,24 +84,24 @@ export function openIptvAddSourceDialog({ onAdded = null } = {}) {
       syncKind();
     });
 
-    const finish = (ok) => {
+    const finish = (sourceId) => {
       if (settled) return;
       settled = true;
-      resolve(Boolean(ok));
+      resolve(sourceId || null);
     };
 
     const dialog = new NuvioDialog({
       title: t("live_add_source", {}, "Add playlist"),
       widthVw: 48,
       content,
-      onDismiss: () => finish(false),
+      onDismiss: () => finish(null),
       buttons: [
         {
           label: t("common.cancel", {}, "Cancel"),
           key: "cancel",
           onAction: () => {
             dialog.destroy();
-            finish(false);
+            finish(null);
           }
         },
         {
@@ -110,7 +110,7 @@ export function openIptvAddSourceDialog({ onAdded = null } = {}) {
           onAction: async () => {
             const value = (field) => content.querySelector(`[data-field="${field}"]`)?.value || "";
             const errorEl = content.querySelector('[data-role="error"]');
-            let ok = false;
+            let ok = null;
             if (kind === "M3U") {
               ok = await IptvRepository.addM3uSource(value("name"), value("url"));
             } else if (kind === "Stalker") {
@@ -137,9 +137,9 @@ export function openIptvAddSourceDialog({ onAdded = null } = {}) {
             }
             dialog.destroy();
             try {
-              await onAdded?.();
+              await onAdded?.(ok);
             } catch (_) {}
-            finish(true);
+            finish(ok);
           }
         }
       ]

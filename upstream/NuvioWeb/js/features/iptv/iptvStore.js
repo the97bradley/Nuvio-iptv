@@ -24,27 +24,48 @@ function normalizeSource(raw = {}) {
   };
 }
 
+function normalizeStarred(raw = {}, validSourceIds = new Set()) {
+  const out = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  for (const [sourceId, ids] of Object.entries(raw)) {
+    if (validSourceIds.size && !validSourceIds.has(sourceId)) continue;
+    const list = Array.isArray(ids)
+      ? [...new Set(ids.map((id) => String(id || "").trim()).filter(Boolean))]
+      : [];
+    if (list.length) out[sourceId] = list;
+  }
+  return out;
+}
+
 function normalizePayload(raw = {}) {
   const sources = Array.isArray(raw?.sources)
     ? raw.sources.map(normalizeSource).filter(Boolean)
     : [];
+  const sourceIds = new Set(sources.map((source) => source.id));
   const selectedSourceId =
     raw?.selectedSourceId == null ? null : String(raw.selectedSourceId);
   return {
     sources,
     selectedSourceId: sources.some((source) => source.id === selectedSourceId)
       ? selectedSourceId
-      : sources[0]?.id || null
+      : sources[0]?.id || null,
+    starredChannelIds: normalizeStarred(raw?.starredChannelIds, sourceIds)
   };
 }
 
 export const IptvStore = {
   load() {
-    return normalizePayload(LocalStore.get(STORAGE_KEY, { sources: [], selectedSourceId: null }));
+    return normalizePayload(
+      LocalStore.get(STORAGE_KEY, {
+        sources: [],
+        selectedSourceId: null,
+        starredChannelIds: {}
+      })
+    );
   },
 
-  save(sources, selectedSourceId) {
-    const payload = normalizePayload({ sources, selectedSourceId });
+  save(sources, selectedSourceId, starredChannelIds = {}) {
+    const payload = normalizePayload({ sources, selectedSourceId, starredChannelIds });
     LocalStore.set(STORAGE_KEY, payload);
     return payload;
   }

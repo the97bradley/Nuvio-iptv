@@ -31,11 +31,12 @@ object IptvRepository {
     }
 
     suspend fun refreshFromStorage() = mutex.withLock {
-        val (storedSources, selectedSourceId) = withContext(Dispatchers.Default) { IptvStorage.load() }
-        val sources = storedSources.filterNot { it.id == RemovedBuiltinSourceId }
-        val selected = selectedSourceId?.takeIf { id -> sources.any { it.id == id } }
+        val stored = withContext(Dispatchers.Default) { IptvStorage.load() }
+        val sources = stored.sources.filterNot { it.id == RemovedBuiltinSourceId }
+        val selected = stored.selectedSourceId?.takeIf { id -> sources.any { it.id == id } }
             ?: sources.firstOrNull()?.id
-        IptvStorage.save(sources, selected)
+        val starred = stored.starredChannelIds.filterKeys { id -> sources.any { it.id == id } }
+        IptvStorage.save(sources, selected, starred)
         _state.update {
             it.copy(
                 sources = sources,
@@ -44,6 +45,7 @@ object IptvRepository {
                 groups = emptyList(),
                 isLoaded = true,
                 errorMessage = null,
+                starredChannelIds = starred,
             )
         }
         channelCache = emptyMap()
@@ -61,11 +63,45 @@ object IptvRepository {
         _state.update { it.copy(selectedGroupTitle = groupTitle) }
     }
 
+    fun catalogChannels(sourceId: String, query: String = "", starredOnly: Boolean = false): List<IptvChannel> {
+        val all = channelCache[sourceId].orEmpty()
+        val trimmed = query.trim()
+        return all.filter { channel ->
+            if (starredOnly && !_state.value.isStarred(channel)) return@filter false
+            if (trimmed.isEmpty()) true
+            else {
+                channel.name.contains(trimmed, ignoreCase = true) ||
+                    (channel.groupTitle?.contains(trimmed, ignoreCase = true) == true)
+            }
+        }
+    }
+
+    fun toggleStar(channel: IptvChannel): Boolean {
+        val sourceId = channel.sourceId
+        val current = _state.value.starredIdsFor(sourceId).toMutableSet()
+        val nowStarred = if (current.contains(channel.id)) {
+            current.remove(channel.id)
+            false
+        } else {
+            current.add(channel.id)
+            true
+        }
+        val nextStarred = _state.value.starredChannelIds.toMutableMap()
+        if (current.isEmpty()) nextStarred.remove(sourceId)
+        else nextStarred[sourceId] = current.toList()
+        _state.update { it.copy(starredChannelIds = nextStarred) }
+        persist()
+        val selectedId = _state.value.selectedSourceId
+        val cached = selectedId?.let { channelCache[it] }
+        if (cached != null) publishChannels(cached)
+        return nowStarred
+    }
+
     suspend fun selectSource(sourceId: String) {
         mutex.withLock {
             val sources = _state.value.sources
             if (sources.none { it.id == sourceId }) return
-            IptvStorage.save(sources, sourceId)
+            persist(selectedSourceId = sourceId)
             _state.update {
                 it.copy(
                     selectedSourceId = sourceId,
@@ -145,7 +181,7 @@ object IptvRepository {
                 _state.value.selectedSourceId != sourceId -> _state.value.selectedSourceId
                 else -> sources.firstOrNull()?.id
             }
-            IptvStorage.save(sources, nextSelected)
+            val nextStarred = _state.value.starredChannelIds - sourceId
             channelCache = channelCache - sourceId
             stalkerClients.remove(sourceId)
             _state.update {
@@ -156,8 +192,10 @@ object IptvRepository {
                     channels = emptyList(),
                     groups = emptyList(),
                     errorMessage = null,
+                    starredChannelIds = nextStarred,
                 )
             }
+            persist(sources = sources, selectedSourceId = nextSelected, starredChannelIds = nextStarred)
         }
         _state.value.selectedSourceId?.let { loadChannelsForSource(it, forceNetwork = false) }
     }
@@ -201,10 +239,19 @@ object IptvRepository {
         )
     }
 
+    private fun persist(
+        sources: List<IptvPlaylistSource> = _state.value.sources,
+        selectedSourceId: String? = _state.value.selectedSourceId,
+        starredChannelIds: Map<String, List<String>> = _state.value.starredChannelIds,
+    ) {
+        IptvStorage.save(sources, selectedSourceId, starredChannelIds)
+    }
+
     private suspend fun persistAndLoad(source: IptvPlaylistSource): Boolean {
         mutex.withLock {
             val sources = _state.value.sources + source
-            IptvStorage.save(sources, source.id)
+            // New playlists start with zero stars.
+            persist(sources = sources, selectedSourceId = source.id)
             _state.update {
                 it.copy(
                     sources = sources,
@@ -242,8 +289,20 @@ object IptvRepository {
             val refreshed = source.copy(lastRefreshedAtEpochMs = currentTimeMillis())
             mutex.withLock {
                 val sources = _state.value.sources.map { if (it.id == sourceId) refreshed else it }
-                IptvStorage.save(sources, _state.value.selectedSourceId)
-                _state.update { it.copy(sources = sources, isLoading = false, errorMessage = null) }
+                val validIds = channels.map { it.id }.toSet()
+                val keptStars = _state.value.starredIdsFor(sourceId).filter { it in validIds }
+                val nextStarred = _state.value.starredChannelIds.toMutableMap()
+                if (keptStars.isEmpty()) nextStarred.remove(sourceId)
+                else nextStarred[sourceId] = keptStars
+                persist(sources = sources, starredChannelIds = nextStarred)
+                _state.update {
+                    it.copy(
+                        sources = sources,
+                        isLoading = false,
+                        errorMessage = null,
+                        starredChannelIds = nextStarred,
+                    )
+                }
             }
             publishChannels(channels)
             true
@@ -285,7 +344,8 @@ object IptvRepository {
     }
 
     private fun publishChannels(channels: List<IptvChannel>) {
-        val groups = channels
+        val starred = channels.filter { _state.value.isStarred(it) }
+        val groups = starred
             .groupBy { it.groupTitle?.takeIf(String::isNotBlank) ?: IptvUiState.UngroupedTitle }
             .entries
             .sortedBy { it.key.lowercase() }

@@ -37,6 +37,7 @@ function createState(partial = {}) {
     isLoading: false,
     errorMessage: null,
     isLoaded: false,
+    starredChannelIds: {},
     ...partial
   };
 }
@@ -72,8 +73,57 @@ export const IptvRepository = {
     this._emit();
   },
 
+  _persist(sources = this._state.sources, selectedSourceId = this._state.selectedSourceId) {
+    return IptvStore.save(sources, selectedSourceId, this._state.starredChannelIds);
+  },
+
+  starredIdsFor(sourceId) {
+    const list = this._state.starredChannelIds?.[sourceId];
+    return Array.isArray(list) ? list : [];
+  },
+
+  starredCount(sourceId) {
+    return this.starredIdsFor(sourceId).length;
+  },
+
+  isStarred(channel) {
+    if (!channel?.id || !channel?.sourceId) return false;
+    return this.starredIdsFor(channel.sourceId).includes(channel.id);
+  },
+
+  toggleStar(channel) {
+    if (!channel?.id || !channel?.sourceId) return false;
+    const sourceId = channel.sourceId;
+    const current = new Set(this.starredIdsFor(sourceId));
+    if (current.has(channel.id)) current.delete(channel.id);
+    else current.add(channel.id);
+    const nextStarred = { ...this._state.starredChannelIds };
+    const ids = [...current];
+    if (ids.length) nextStarred[sourceId] = ids;
+    else delete nextStarred[sourceId];
+    this._update({ starredChannelIds: nextStarred });
+    this._persist();
+    const cached = this._channelCache.get(sourceId);
+    if (cached && this._state.selectedSourceId === sourceId) {
+      this.publishChannels(cached);
+    } else {
+      // Refresh Live groups if this source's stars changed while another source selected.
+      const selectedCache = this._channelCache.get(this._state.selectedSourceId);
+      if (selectedCache) this.publishChannels(selectedCache);
+    }
+    return current.has(channel.id);
+  },
+
+  setStarred(channel, starred) {
+    if (!channel?.id || !channel?.sourceId) return;
+    const currently = this.isStarred(channel);
+    if (Boolean(starred) === currently) return;
+    this.toggleStar(channel);
+  },
+
+  /** Live view: starred channels only (+ source / group / search filters). */
   filteredChannels(state = this._state) {
-    let list = state.channels;
+    let list = state.channels.filter((channel) => this.isStarred(channel));
     if (state.selectedSourceId) {
       list = list.filter((channel) => channel.sourceId === state.selectedSourceId);
     }
@@ -93,6 +143,26 @@ export const IptvRepository = {
     );
   },
 
+  /** Settings playlist editor: all channels for a source (not only starred). */
+  catalogChannels(sourceId, { query = "", starredOnly = false } = {}) {
+    const all = this._channelCache.get(sourceId) || [];
+    const q = String(query || "").trim().toLowerCase();
+    return all.filter((channel) => {
+      if (starredOnly && !this.isStarred(channel)) return false;
+      if (!q) return true;
+      return (
+        channel.name.toLowerCase().includes(q) ||
+        String(channel.groupTitle || "")
+          .toLowerCase()
+          .includes(q)
+      );
+    });
+  },
+
+  sourcesWithStars(state = this._state) {
+    return state.sources.filter((source) => this.starredCount(source.id) > 0);
+  },
+
   async ensureLoaded() {
     if (this._state.isLoaded) return this._state;
     return this.refreshFromStorage();
@@ -102,16 +172,17 @@ export const IptvRepository = {
     const payload = IptvStore.load();
     const sources = payload.sources;
     const selected = payload.selectedSourceId || sources[0]?.id || null;
-    IptvStore.save(sources, selected);
     this._channelCache.clear();
     this._stalkerClients.clear();
     this._update(
       createState({
         sources,
         selectedSourceId: selected,
+        starredChannelIds: payload.starredChannelIds || {},
         isLoaded: true
       })
     );
+    this._persist(sources, selected);
     if (selected) {
       await this.loadChannelsForSource(selected, false);
     }
@@ -128,7 +199,7 @@ export const IptvRepository = {
 
   async selectSource(sourceId) {
     if (!this._state.sources.some((source) => source.id === sourceId)) return;
-    IptvStore.save(this._state.sources, sourceId);
+    this._persist(this._state.sources, sourceId);
     this._update({
       selectedSourceId: sourceId,
       selectedGroupTitle: null,
@@ -142,7 +213,7 @@ export const IptvRepository = {
     const trimmedUrl = String(url || "").trim();
     if (!trimmedUrl) {
       this._update({ errorMessage: "Playlist URL is required." });
-      return false;
+      return null;
     }
     return this.persistAndLoad({
       id: randomId("m3u"),
@@ -163,12 +234,12 @@ export const IptvRepository = {
       mac = normalizeMac(macAddress);
     } catch (error) {
       this._update({ errorMessage: error?.message || "Invalid MAC address." });
-      return false;
+      return null;
     }
     const trimmedUrl = String(portalUrl || "").trim();
     if (!trimmedUrl) {
       this._update({ errorMessage: "Portal URL is required." });
-      return false;
+      return null;
     }
     return this.persistAndLoad({
       id: randomId("stalker"),
@@ -189,11 +260,11 @@ export const IptvRepository = {
       server = normalizeServerBase(serverUrl);
     } catch (error) {
       this._update({ errorMessage: error?.message || "Invalid server URL." });
-      return false;
+      return null;
     }
     if (!String(username || "").trim() || !String(password || "").trim()) {
       this._update({ errorMessage: "Xtream username and password are required." });
-      return false;
+      return null;
     }
     return this.persistAndLoad({
       id: randomId("xtream"),
@@ -214,7 +285,8 @@ export const IptvRepository = {
       this._state.selectedSourceId === sourceId
         ? sources[0]?.id || null
         : this._state.selectedSourceId;
-    IptvStore.save(sources, nextSelected);
+    const nextStarred = { ...this._state.starredChannelIds };
+    delete nextStarred[sourceId];
     this._channelCache.delete(sourceId);
     this._stalkerClients.delete(sourceId);
     this._update({
@@ -223,8 +295,10 @@ export const IptvRepository = {
       selectedGroupTitle: null,
       channels: [],
       groups: [],
-      errorMessage: null
+      errorMessage: null,
+      starredChannelIds: nextStarred
     });
+    this._persist(sources, nextSelected);
     if (nextSelected) {
       await this.loadChannelsForSource(nextSelected, false);
     }
@@ -246,9 +320,10 @@ export const IptvRepository = {
     throw new Error("This channel has no playable URL.");
   },
 
+  /** @returns {Promise<string|null>} new source id on success */
   async persistAndLoad(source) {
     const sources = [...this._state.sources, source];
-    IptvStore.save(sources, source.id);
+    // New playlists start with zero stars — Live stays empty until user stars channels.
     this._update({
       sources,
       selectedSourceId: source.id,
@@ -256,7 +331,9 @@ export const IptvRepository = {
       query: "",
       errorMessage: null
     });
-    return this.loadChannelsForSource(source.id, true);
+    this._persist(sources, source.id);
+    const ok = await this.loadChannelsForSource(source.id, true);
+    return ok ? source.id : null;
   },
 
   async loadChannelsForSource(sourceId, forceNetwork) {
@@ -282,10 +359,21 @@ export const IptvRepository = {
         ).loadChannels(source.id);
       }
       this._channelCache.set(sourceId, channels);
+      // Drop stars for channels that no longer exist after refresh.
+      const validIds = new Set(channels.map((channel) => channel.id));
+      const keptStars = this.starredIdsFor(sourceId).filter((id) => validIds.has(id));
+      const nextStarred = { ...this._state.starredChannelIds };
+      if (keptStars.length) nextStarred[sourceId] = keptStars;
+      else delete nextStarred[sourceId];
       const refreshed = { ...source, lastRefreshedAtEpochMs: Date.now() };
       const sources = this._state.sources.map((item) => (item.id === sourceId ? refreshed : item));
-      IptvStore.save(sources, this._state.selectedSourceId);
-      this._update({ sources, isLoading: false, errorMessage: null });
+      this._update({
+        sources,
+        isLoading: false,
+        errorMessage: null,
+        starredChannelIds: nextStarred
+      });
+      this._persist(sources, this._state.selectedSourceId);
       this.publishChannels(channels);
       return true;
     } catch (error) {
@@ -317,7 +405,7 @@ export const IptvRepository = {
   },
 
   publishChannels(channels) {
-    const groups = groupChannels(channels);
+    const groups = groupChannels(channels.filter((channel) => this.isStarred(channel)));
     const selectedGroupTitle = this._state.selectedGroupTitle;
     this._update({
       channels,

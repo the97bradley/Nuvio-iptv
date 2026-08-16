@@ -65,7 +65,7 @@ export const LiveScreen = {
                 t(
                   "live_subtitle",
                   {},
-                  "Watch channels from playlists you add in Settings → IPTV."
+                  "Only starred channels from Settings → IPTV."
                 )
               )}</p>
             </div>
@@ -172,9 +172,38 @@ export const LiveScreen = {
                          <p>${escapeHtml(t("live_loading", {}, "Loading channels"))}</p>
                        </section>`
                     : channels.length === 0
-                      ? `<section class="live-empty live-empty-soft">
-                           <p>${escapeHtml(t("live_no_channels", {}, "No channels match this filter."))}</p>
-                         </section>`
+                      ? (() => {
+                          const starredCount = state.selectedSourceId
+                            ? IptvRepository.starredCount(state.selectedSourceId)
+                            : 0;
+                          const hasFilter =
+                            Boolean(String(state.query || "").trim()) ||
+                            Boolean(state.selectedGroupTitle);
+                          if (!hasFilter && starredCount === 0) {
+                            return `<section class="live-empty live-empty-soft">
+                              <h2>${escapeHtml(
+                                t("live_no_stars_title", {}, "No starred channels")
+                              )}</h2>
+                              <p>${escapeHtml(
+                                t(
+                                  "live_no_stars_body",
+                                  {},
+                                  "Open Settings → IPTV, pick a playlist, and star the channels you want here."
+                                )
+                              )}</p>
+                              <button class="live-btn live-btn-primary focusable" data-action="open-settings" data-row="4" data-col="0">
+                                ${escapeHtml(
+                                  t("live_open_iptv_settings", {}, "Open IPTV settings")
+                                )}
+                              </button>
+                            </section>`;
+                          }
+                          return `<section class="live-empty live-empty-soft">
+                            <p>${escapeHtml(
+                              t("live_no_channels", {}, "No channels match this filter.")
+                            )}</p>
+                          </section>`;
+                        })()
                       : `<section class="live-list-wrap">
                            <div class="live-list-meta">${escapeHtml(
                              t(

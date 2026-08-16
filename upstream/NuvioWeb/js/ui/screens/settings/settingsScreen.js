@@ -2140,6 +2140,9 @@ export const SettingsScreen = {
       persistedUiState.appearanceThemeFocusKey || this.appearanceThemeFocusKey || null;
     this.pluginDraft = this.pluginDraft || "";
     this.integrationView = persistedUiState.integrationView || this.integrationView || "hub";
+    this.iptvView = this.iptvView || "hub";
+    this.iptvChannelQuery = this.iptvChannelQuery || "";
+    this.iptvStarredOnly = Boolean(this.iptvStarredOnly);
     this.expandedSections = normalizeExpandedSections(
       persistedUiState.expandedSections || this.expandedSections
     );
@@ -2208,10 +2211,40 @@ export const SettingsScreen = {
       this.rememberAppearanceThemeFocusKey();
       this.collapseExpandedSection(this.activeSection);
     }
+    if (nextSectionId !== "iptv") {
+      this.iptvView = "hub";
+      this.iptvChannelQuery = "";
+      this.iptvStarredOnly = false;
+    }
     this.activeSection = sectionId || null;
     this.contentFocusKey =
       this.activeSection === "appearance" ? this.getAppearanceThemeFocusKey() : null;
     this.persistUiState();
+  },
+
+  bindIptvChannelSearchEvents() {
+    const field = this.container?.querySelector?.("[data-iptv-channel-search='1']");
+    if (!field || field.__iptvChannelSearchBound) return;
+    field.__iptvChannelSearchBound = true;
+    field.addEventListener("input", (event) => {
+      this.iptvChannelQuery = String(event.target?.value ?? "");
+      const selectionStart = event.target?.selectionStart;
+      const selectionEnd = event.target?.selectionEnd;
+      this.contentFocusKey = "iptv-channel-search";
+      this.focusZone = "content";
+      this.render({ refreshModel: false }).then(() => {
+        const next = this.container?.querySelector?.("[data-iptv-channel-search='1']");
+        if (!next) return;
+        next.focus?.();
+        try {
+          if (Number.isFinite(selectionStart) && Number.isFinite(selectionEnd)) {
+            next.setSelectionRange?.(selectionStart, selectionEnd);
+          }
+        } catch (_) {
+          // Ignore unsupported selection APIs on TV browsers.
+        }
+      });
+    });
   },
 
   toggleExpandedSection(sectionId, groupId) {
@@ -7093,15 +7126,27 @@ export const SettingsScreen = {
   renderIptvSection() {
     const state = IptvRepository.getState();
     const sources = Array.isArray(state.sources) ? state.sources : [];
+    if (this.iptvView && this.iptvView !== "hub") {
+      const source = sources.find((item) => item.id === this.iptvView);
+      if (source) return this.renderIptvPlaylistDetail(source);
+      this.iptvView = "hub";
+    }
 
     this.actionMap.set("iptv:add", async () => {
-      const added = await openIptvAddSourceDialog({
-        onAdded: async () => {
+      const addedId = await openIptvAddSourceDialog({
+        onAdded: async (sourceId) => {
+          this.iptvView = sourceId || "hub";
+          this.iptvChannelQuery = "";
+          this.iptvStarredOnly = false;
           await IptvRepository.ensureLoaded();
+          if (sourceId) await IptvRepository.selectSource(sourceId);
           await this.render({ refreshModel: false });
         }
       });
-      if (added) {
+      if (addedId) {
+        this.iptvView = addedId;
+        this.iptvChannelQuery = "";
+        this.iptvStarredOnly = false;
         await this.render({ refreshModel: false });
       }
     });
@@ -7111,44 +7156,12 @@ export const SettingsScreen = {
     });
 
     sources.forEach((source) => {
-      this.actionMap.set(`iptv:source:${source.id}`, () => {
-        this.openOptionDialog({
-          title: source.name,
-          subtitle: `${source.kind} · ${source.url}`,
-          returnFocusKey: `iptv:source:${source.id}`,
-          options: [
-            {
-              id: "select",
-              label: t("live_open_playlist", {}, "Open in Live")
-            },
-            {
-              id: "refresh",
-              label: t("live_refresh", {}, "Refresh channels")
-            },
-            {
-              id: "delete",
-              label: t("live_remove_source", {}, "Remove playlist"),
-              danger: true
-            }
-          ],
-          onSelect: async (option) => {
-            if (option?.id === "select") {
-              await IptvRepository.selectSource(source.id);
-              await Router.navigate("live");
-              return;
-            }
-            if (option?.id === "refresh") {
-              await IptvRepository.selectSource(source.id);
-              await IptvRepository.refreshSelectedSource();
-              await this.render({ refreshModel: false });
-              return;
-            }
-            if (option?.id === "delete") {
-              await IptvRepository.removeSource(source.id);
-              await this.render({ refreshModel: false });
-            }
-          }
-        });
+      this.actionMap.set(`iptv:source:${source.id}`, async () => {
+        this.iptvView = source.id;
+        this.iptvChannelQuery = "";
+        this.iptvStarredOnly = false;
+        await IptvRepository.selectSource(source.id);
+        await this.render({ refreshModel: false });
       });
     });
 
@@ -7159,7 +7172,7 @@ export const SettingsScreen = {
           t(
             "settings.sections.iptv.subtitle",
             {},
-            "Add M3U playlists, Stalker portals, or Xtream Codes logins for Live."
+            "Add playlists, then star the channels you want in Live."
           )
         )}</p>
       </header>
@@ -7179,7 +7192,11 @@ export const SettingsScreen = {
           ${this.renderActionRow({
             focusKey: "iptv:open-live",
             title: t("live_title", {}, "Live"),
-            subtitle: t("settings.iptv.open_live_subtitle", {}, "Browse and play loaded channels"),
+            subtitle: t(
+              "settings.iptv.open_live_subtitle",
+              {},
+              "Only starred channels appear in Live"
+            ),
             leadingIcon: "live_tv"
           })}
         </div>
@@ -7203,28 +7220,205 @@ export const SettingsScreen = {
           ${
             sources.length
               ? sources
-                  .map((source) =>
-                    this.renderActionRow({
+                  .map((source) => {
+                    const starred = IptvRepository.starredCount(source.id);
+                    return this.renderActionRow({
                       focusKey: `iptv:source:${source.id}`,
                       title: source.name,
                       subtitle: `${source.kind} · ${source.url}`,
-                      value: source.kind,
+                      value: t(
+                        "settings.iptv.starred_count",
+                        { count: starred },
+                        starred ? `${starred} starred` : "No stars"
+                      ),
                       leadingIcon:
                         source.kind === "Stalker"
                           ? "router"
                           : source.kind === "Xtream"
                             ? "vpn_key"
                             : "link"
-                    })
-                  )
+                    });
+                  })
                   .join("")
               : `<div class="settings-empty-state"><p>${escapeHtml(
                   t(
                     "settings.iptv.empty_hint",
                     {},
-                    "Playlists you add here show up in the Live tab."
+                    "Add a playlist, open it, and star channels for Live."
                   )
                 )}</p></div>`
+          }
+        </div>
+      </div>
+    `;
+  },
+
+  renderIptvPlaylistDetail(source) {
+    const state = IptvRepository.getState();
+    const channels = IptvRepository.catalogChannels(source.id, {
+      query: this.iptvChannelQuery,
+      starredOnly: this.iptvStarredOnly
+    });
+    const starred = IptvRepository.starredCount(source.id);
+    const total = (IptvRepository._channelCache.get(source.id) || []).length;
+
+    this.actionMap.set("iptv:detail:back", async () => {
+      this.iptvView = "hub";
+      this.iptvChannelQuery = "";
+      this.iptvStarredOnly = false;
+      await this.render({ refreshModel: false });
+    });
+
+    this.actionMap.set("iptv:detail:refresh", async () => {
+      await IptvRepository.selectSource(source.id);
+      await IptvRepository.refreshSelectedSource();
+      await this.render({ refreshModel: false });
+    });
+
+    this.actionMap.set("iptv:detail:delete", () => {
+      this.openOptionDialog({
+        title: t("live_remove_source", {}, "Remove playlist"),
+        message: t(
+          "settings.iptv.delete_confirm",
+          {},
+          "Remove this playlist and its starred channels?"
+        ),
+        returnFocusKey: "iptv:detail:delete",
+        options: [
+          { id: "cancel", label: t("common.cancel", {}, "Cancel") },
+          { id: "confirm", label: t("live_remove_source", {}, "Remove playlist") }
+        ],
+        selectedId: "cancel",
+        onSelect: async (option) => {
+          if (option?.id !== "confirm") return;
+          await IptvRepository.removeSource(source.id);
+          this.iptvView = "hub";
+          await this.render({ refreshModel: false });
+        }
+      });
+    });
+
+    this.actionMap.set("iptv:detail:filter:all", async () => {
+      this.iptvStarredOnly = false;
+      await this.render({ refreshModel: false });
+    });
+
+    this.actionMap.set("iptv:detail:filter:starred", async () => {
+      this.iptvStarredOnly = true;
+      await this.render({ refreshModel: false });
+    });
+
+    channels.forEach((channel) => {
+      this.actionMap.set(`iptv:star:${channel.id}`, async () => {
+        IptvRepository.toggleStar(channel);
+        await this.render({ refreshModel: false });
+      });
+    });
+
+    return `
+      <header class="settings-content-header">
+        <h1 class="settings-title">${escapeHtml(source.name)}</h1>
+        <p class="settings-subtitle">${escapeHtml(
+          `${source.kind} · ${starred} starred · ${total} channels`
+        )}</p>
+      </header>
+      <div class="settings-group-card">
+        <div class="settings-stack">
+          ${this.renderActionRow({
+            focusKey: "iptv:detail:back",
+            title: t("settings.iptv.back", {}, "Back to playlists"),
+            leadingIcon: "arrow_back",
+            icon: "back"
+          })}
+          ${this.renderActionRow({
+            focusKey: "iptv:detail:refresh",
+            title: t("live_refresh", {}, "Refresh channels"),
+            subtitle: t(
+              "settings.iptv.refresh_subtitle",
+              {},
+              "Reload the playlist. Stars for missing channels are cleared."
+            ),
+            leadingIcon: "refresh"
+          })}
+          ${this.renderActionRow({
+            focusKey: "iptv:detail:delete",
+            title: t("live_remove_source", {}, "Remove playlist"),
+            leadingIcon: "delete"
+          })}
+        </div>
+      </div>
+      <div class="settings-group-card">
+        <div class="settings-group-heading">
+          <div class="settings-group-title">${escapeHtml(
+            t("settings.iptv.channels_heading", {}, "Channels")
+          )}</div>
+          <div class="settings-group-subtitle">${escapeHtml(
+            t(
+              "settings.iptv.channels_subtitle",
+              {},
+              "Star channels to show them in Live. Nothing is starred by default."
+            )
+          )}</div>
+        </div>
+        <div class="iptv-channel-toolbar">
+          <label class="iptv-channel-search">
+            <span class="material-icons" aria-hidden="true">search</span>
+            <input class="iptv-channel-search-input settings-content-focusable focusable"
+                   type="search"
+                   data-iptv-channel-search="1"
+                   data-focus-key="iptv-channel-search"
+                   data-zone="content"
+                   placeholder="${escapeHtml(t("live_search_channels", {}, "Search channels"))}"
+                   value="${escapeHtml(this.iptvChannelQuery || "")}" />
+          </label>
+          <div class="iptv-channel-filters">
+            <button class="iptv-filter-chip settings-content-focusable focusable${!this.iptvStarredOnly ? " selected" : ""}"
+                    data-zone="content"
+                    ${this.registerAction("iptv:detail:filter:all", this.actionMap.get("iptv:detail:filter:all"))}>
+              ${escapeHtml(t("live_groups_all", {}, "All"))}
+            </button>
+            <button class="iptv-filter-chip settings-content-focusable focusable${this.iptvStarredOnly ? " selected" : ""}"
+                    data-zone="content"
+                    ${this.registerAction("iptv:detail:filter:starred", this.actionMap.get("iptv:detail:filter:starred"))}>
+              ${escapeHtml(t("settings.iptv.filter_starred", {}, "Starred"))}
+            </button>
+          </div>
+        </div>
+        <div class="iptv-channel-list settings-stack">
+          ${
+            state.isLoading
+              ? `<div class="settings-empty-state">${renderLoadingIndicator({
+                  size: "medium"
+                })}<p>${escapeHtml(t("live_loading", {}, "Loading channels"))}</p></div>`
+              : channels.length
+                ? channels
+                    .map((channel) => {
+                      const starredChannel = IptvRepository.isStarred(channel);
+                      return `
+                        <button class="settings-action-row settings-content-focusable focusable iptv-channel-row"
+                                data-zone="content"
+                                ${this.registerAction(
+                                  `iptv:star:${channel.id}`,
+                                  this.actionMap.get(`iptv:star:${channel.id}`)
+                                )}>
+                          <span class="material-icons iptv-star-icon${starredChannel ? " is-starred" : ""}" aria-hidden="true">
+                            ${starredChannel ? "star" : "star_border"}
+                          </span>
+                          <span class="settings-row-copy">
+                            <span class="settings-row-title">${escapeHtml(channel.name)}</span>
+                            <span class="settings-row-subtitle">${escapeHtml(
+                              channel.groupTitle || IptvRepository.UNGROUPED
+                            )}</span>
+                          </span>
+                        </button>
+                      `;
+                    })
+                    .join("")
+                : `<div class="settings-empty-state"><p>${escapeHtml(
+                    this.iptvStarredOnly
+                      ? t("settings.iptv.no_starred", {}, "No starred channels yet.")
+                      : t("live_no_channels", {}, "No channels match this filter.")
+                  )}</p></div>`
           }
         </div>
       </div>
@@ -7365,6 +7559,7 @@ export const SettingsScreen = {
       this.optionDialog.onRender(dialogSlot);
     }
     this.bindTextDialogEvents();
+    this.bindIptvChannelSearchEvents();
 
     bindRootSidebarEvents(this.container, {
       currentRoute: "settings",
