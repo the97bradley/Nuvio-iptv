@@ -76,3 +76,7 @@ Large TorrServer / native binaries are intentionally omitted from git; pull them
 ## License
 
 GPL-3.0 (same as upstream Nuvio).
+
+## Agents
+
+See **[AGENTS.md](./AGENTS.md)** for living project context. On session start run `./scripts/agent-bootstrap.sh` (installs / verifies the [Caveman](https://github.com/JuliusBrussee/caveman) skill).
