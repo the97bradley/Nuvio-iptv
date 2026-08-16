@@ -8,13 +8,14 @@ Fork of [NuvioMedia](https://github.com/NuvioMedia) that keeps the full Nuvio me
 - **Mirrored upstream snapshots:** `upstream/` (TV, Desktop, Web, self-host, engine, wrappers)
 - **iOS / TV / Desktop IPTV work:** deferred
 
-## Android Live tab (v1)
+## Android Live tab
 
 - New root tab: **Live**
 - Add remote **M3U / M3U8** playlists
+- Add **Stalker / Ministra** portals (portal URL + MAC)
 - Group + search channels
 - Play through the existing Nuvio player (HLS / TS / etc.)
-- Xtream Codes and Stalker Portal are scaffolded in models only
+- Xtream Codes still scaffolded only
 
 ## Layout
 
