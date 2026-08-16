@@ -30,9 +30,12 @@ object IptvRepository {
     }
 
     suspend fun refreshFromStorage() = mutex.withLock {
-        val (sources, selectedSourceId) = withContext(Dispatchers.Default) { IptvStorage.load() }
+        val (storedSources, selectedSourceId) = withContext(Dispatchers.Default) { IptvStorage.load() }
+        val sources = BuiltinUsaChannels.mergeInto(storedSources)
         val selected = selectedSourceId?.takeIf { id -> sources.any { it.id == id } }
             ?: sources.firstOrNull()?.id
+        // Persist merged list so the built-in USA source survives across launches.
+        IptvStorage.save(sources, selected)
         _state.update {
             it.copy(
                 sources = sources,
@@ -136,8 +139,12 @@ object IptvRepository {
     }
 
     suspend fun removeSource(sourceId: String) {
+        if (BuiltinUsaChannels.isBuiltin(sourceId)) {
+            _state.update { it.copy(errorMessage = "USA Public channels are built in and cannot be removed.") }
+            return
+        }
         mutex.withLock {
-            val sources = _state.value.sources.filterNot { it.id == sourceId }
+            val sources = BuiltinUsaChannels.mergeInto(_state.value.sources.filterNot { it.id == sourceId })
             val nextSelected = when {
                 _state.value.selectedSourceId != sourceId -> _state.value.selectedSourceId
                 else -> sources.firstOrNull()?.id
@@ -200,7 +207,7 @@ object IptvRepository {
 
     private suspend fun persistAndLoad(source: IptvPlaylistSource): Boolean {
         mutex.withLock {
-            val sources = _state.value.sources + source
+            val sources = BuiltinUsaChannels.mergeInto(_state.value.sources + source)
             IptvStorage.save(sources, source.id)
             _state.update {
                 it.copy(
@@ -227,7 +234,7 @@ object IptvRepository {
         _state.update { it.copy(isLoading = true, errorMessage = null) }
         return try {
             val channels = when (source.kind) {
-                IptvSourceKind.M3U -> fetchM3uChannels(source)
+                IptvSourceKind.M3U -> fetchM3uChannels(source, forceNetwork = forceNetwork)
                 IptvSourceKind.Stalker -> clientFor(source).loadChannels(source.id)
                 IptvSourceKind.Xtream -> XtreamCodesClient(
                     serverUrl = source.url,
@@ -264,7 +271,13 @@ object IptvRepository {
         }
     }
 
-    private suspend fun fetchM3uChannels(source: IptvPlaylistSource): List<IptvChannel> {
+    private suspend fun fetchM3uChannels(
+        source: IptvPlaylistSource,
+        forceNetwork: Boolean,
+    ): List<IptvChannel> {
+        if (BuiltinUsaChannels.isBuiltin(source)) {
+            return fetchBuiltinUsaChannels(forceNetwork = forceNetwork)
+        }
         val response = httpRequestRaw(
             method = "GET",
             url = source.url,
@@ -279,6 +292,58 @@ object IptvRepository {
         return withContext(Dispatchers.Default) {
             M3uPlaylistParser.parse(response.body, source.id)
         }
+    }
+
+    /**
+     * Built-in USA playlist: always available from the embedded M3U.
+     * Pull-to-refresh tries the remote iptv-org US list, then falls back to embedded.
+     */
+    private suspend fun fetchBuiltinUsaChannels(forceNetwork: Boolean): List<IptvChannel> {
+        if (forceNetwork) {
+            val remote = runCatching {
+                val response = httpRequestRaw(
+                    method = "GET",
+                    url = BuiltinUsaChannels.RefreshUrl,
+                    headers = emptyMap(),
+                    body = "",
+                    followRedirects = true,
+                    maxResponseBodyBytes = MaxPlaylistBytes,
+                )
+                if (response.status !in 200..299) {
+                    error("Playlist request failed (${response.status} ${response.statusText})")
+                }
+                withContext(Dispatchers.Default) {
+                    M3uPlaylistParser.parse(response.body, BuiltinUsaChannels.SourceId)
+                        .filter(::isCommonUsaChannel)
+                }
+            }.getOrNull()
+            if (!remote.isNullOrEmpty()) return remote
+        }
+        val embedded = BuiltinUsaChannels.loadEmbeddedPlaylistText()
+        return withContext(Dispatchers.Default) {
+            M3uPlaylistParser.parse(embedded, BuiltinUsaChannels.SourceId)
+        }
+    }
+
+    /** Keep remote refresh focused on common public / news / weather brands. */
+    private fun isCommonUsaChannel(channel: IptvChannel): Boolean {
+        val name = channel.name.lowercase()
+        val group = channel.groupTitle.orEmpty().lowercase()
+        val url = channel.streamUrl.lowercase()
+        if (url.contains("youtube.com") || url.contains("youtu.be")) return false
+        if (listOf("xxx", "adult", "porn", "playboy").any { name.contains(it) || group.contains(it) }) {
+            return false
+        }
+        val keywords = listOf(
+            "news", "weather", "cnn", "fox", "nbc", "abc", "cbs", "msnbc", "cnbc",
+            "bloomberg", "pbs", "npr", "nasa", "nasa tv", "c-span", "cspan",
+            "buzzr", "stadium", "retro", "pluto", "roku", "free", "local",
+            "charge", "comet", "gettv", "antenna", "me-tv", "metv", "story",
+            "heartland", "rev'n", "revn", "biz", "thecw", "the cw",
+        )
+        return keywords.any { name.contains(it) || group.contains(it) } ||
+            group == "usa" ||
+            group.contains("united states")
     }
 
     private fun publishChannels(channels: List<IptvChannel>) {

@@ -398,8 +398,8 @@
     <string name="iptv_add_xtream_action">Add Xtream</string>
     <string name="iptv_cancel">Cancel</string>
     <string name="iptv_channel_count">%1$d channels</string>
-    <string name="iptv_empty_body">Add an M3U playlist, Stalker portal (URL + MAC), or Xtream Codes login (server + user + pass) to watch live TV.</string>
-    <string name="iptv_empty_title">No IPTV sources yet</string>
+    <string name="iptv_empty_body">USA Public channels are built in. You can also add an M3U playlist, Stalker portal (URL + MAC), or Xtream Codes login.</string>
+    <string name="iptv_empty_title">No channels loaded</string>
     <string name="iptv_groups_all">All groups</string>
     <string name="iptv_kind_m3u">M3U</string>
     <string name="iptv_kind_stalker">Stalker Portal</string>

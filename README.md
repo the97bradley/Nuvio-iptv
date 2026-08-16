@@ -11,11 +11,15 @@ Fork of [NuvioMedia](https://github.com/NuvioMedia) that keeps the full Nuvio me
 ## Android Live tab
 
 - New root tab: **Live**
+- **USA Public** channels are built in (curated from public community playlists; always available, not removable)
 - Add remote **M3U / M3U8** playlists
 - Add **Stalker / Ministra** portals (portal URL + MAC)
 - Add **Xtream Codes** logins (server URL + username + password)
 - Group + search channels
 - Play through the existing Nuvio player (HLS / TS / etc.)
+
+Built-in playlist file: `composeApp/src/commonMain/composeResources/files/usa_public.m3u`
+(sources: [iptv-org](https://github.com/iptv-org/iptv) US list + [Free-TV](https://github.com/Free-TV/IPTV) USA).
 
 ## Layout
 
